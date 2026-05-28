@@ -13,7 +13,7 @@ interface AnnotationState {
   exportResult: { astroDbImageId: number; fileUrl: string } | null;
 }
 
-export function useAnnotation(imagePath: string | null) {
+export function useAnnotation(imageId: string | null) {
   const [state, setState] = useState<AnnotationState>({
     annotation: null,
     markers: [],
@@ -33,13 +33,13 @@ export function useAnnotation(imagePath: string | null) {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
   }
 
-  // Load annotation on mount / when imagePath changes
+  // Load annotation on mount / when imageId changes (imageId is the astro-db numeric ID as string)
   useEffect(() => {
-    if (!imagePath) return;
+    if (!imageId) return;
     clearPoll();
     setState(s => ({ ...s, loading: true, error: null, exportResult: null }));
 
-    fetch(`/api/annotations?imagePath=${encodeURIComponent(imagePath)}`)
+    fetch(`/api/annotations?imagePath=${encodeURIComponent(imageId)}`)
       .then(r => r.json() as Promise<{
         annotation: (Annotation & { style: StyleConfig }) | null;
         defaultStyle: StyleConfig;
@@ -69,7 +69,7 @@ export function useAnnotation(imagePath: string | null) {
       });
 
     return () => { clearPoll(); };
-  }, [imagePath]);
+  }, [imageId]);
 
   function startPollStatus(annId: number) {
     clearPoll();
@@ -97,7 +97,7 @@ export function useAnnotation(imagePath: string | null) {
   }
 
   const plateSolve = useCallback(async () => {
-    if (!imagePath) return;
+    if (!imageId) return;
     setState(s => ({ ...s, solveStatus: 'uploading', error: null }));
 
     try {
@@ -106,7 +106,7 @@ export function useAnnotation(imagePath: string | null) {
         const cr = await fetch('/api/annotations', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ imagePath }),
+          body: JSON.stringify({ imagePath: imageId }),
         });
         const cd = await cr.json() as { id: number };
         annotationIdRef.current = cd.id;
@@ -115,7 +115,7 @@ export function useAnnotation(imagePath: string | null) {
       const r = await fetch('/api/solve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imagePath }),
+        body: JSON.stringify({ imageId: Number(imageId) }),
       });
       const data = await r.json() as { id: number; status: SolveStatus; markers?: Marker[]; wcs?: unknown };
       annotationIdRef.current = data.id;
@@ -132,7 +132,7 @@ export function useAnnotation(imagePath: string | null) {
     } catch (err) {
       setState(s => ({ ...s, solveStatus: 'failed', error: String(err) }));
     }
-  }, [imagePath]);
+  }, [imageId]);
 
   const scheduleSave = useCallback((markers: Marker[], style: StyleConfig) => {
     if (!annotationIdRef.current) return;

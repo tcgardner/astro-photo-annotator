@@ -54,15 +54,27 @@ export async function querySimbadAll(wcs: WCS): Promise<Marker[]> {
   const resp = await fetch(`${SIMBAD_TAP}?${params}`);
   if (!resp.ok) throw new Error(`SIMBAD query failed: ${resp.status}`);
 
-  const json = await resp.json() as { data?: unknown[][] };
+  const json = await resp.json() as { metadata?: { name: string }[]; data?: unknown[][] };
   if (!json.data || json.data.length === 0) return [];
+
+  // Resolve column positions from metadata rather than assuming fixed order
+  const meta = json.metadata ?? [];
+  const col = (name: string) => meta.findIndex(m => m.name === name);
+  const mainIdIdx = col('main_id');
+  const raIdx = col('ra');
+  const decIdx = col('dec');
+
+  if (raIdx === -1 || decIdx === -1 || mainIdIdx === -1) {
+    console.error('[simbad] unexpected column layout:', meta.map(m => m.name));
+    return [];
+  }
 
   const markers: Marker[] = [];
 
   for (const row of json.data) {
-    const mainId = String(row[0]);
-    const ra = Number(row[2]);
-    const dec = Number(row[3]);
+    const mainId = String(row[mainIdIdx]);
+    const ra = Number(row[raIdx]);
+    const dec = Number(row[decIdx]);
 
     const coords = raDecToPixel(ra, dec, wcs);
     if (!coords) continue;

@@ -8,7 +8,9 @@ export function raDecToPixel(
   const centerDecRad = (wcs.dec * Math.PI) / 180;
   const orientationRad = (wcs.orientation * Math.PI) / 180;
 
-  const dRa = (objRa - wcs.ra) * Math.cos(centerDecRad);
+  // Normalize dRa to [-180, 180] to handle RA wrap-around at 0°/360°
+  const rawDRa = objRa - wcs.ra;
+  const dRa = ((rawDRa + 540) % 360 - 180) * Math.cos(centerDecRad);
   const dDec = objDec - wcs.dec;
 
   const r = Math.sqrt(dRa * dRa + dDec * dDec);
@@ -18,7 +20,8 @@ export function raDecToPixel(
   const imgCx = wcs.width / 2;
   const imgCy = wcs.height / 2;
 
-  const x = imgCx + pxDist * Math.sin(angle);
+  // parity -1 = standard astronomical (north up, east left); +1 = mirrored (east right)
+  const x = imgCx + wcs.parity * pxDist * Math.sin(angle);
   const y = imgCy - pxDist * Math.cos(angle);
 
   if (x < 0 || x > wcs.width || y < 0 || y > wcs.height) return null;

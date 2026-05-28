@@ -1,5 +1,3 @@
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import type { WCS } from '../types.js';
 
 const BASE = 'https://nova.astrometry.net/api';
@@ -37,17 +35,16 @@ export async function astrometryLogin(apiKey: string): Promise<string> {
   return json.session;
 }
 
-export async function astrometryUpload(session: string, imagePath: string): Promise<number> {
-  const imageData = await readFile(imagePath);
-  const ext = path.extname(imagePath).toLowerCase();
-  const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
-
+export async function astrometryUpload(
+  session: string,
+  image: { data: Buffer; filename: string; mime: string },
+): Promise<number> {
   const formData = new FormData();
   formData.append(
     'request-json',
     JSON.stringify({ session, publicly_visible: 'n', allow_modifications: 'n', allow_commercial_use: 'n' }),
   );
-  formData.append('file', new Blob([imageData], { type: mime }), path.basename(imagePath));
+  formData.append('file', new Blob([new Uint8Array(image.data)], { type: image.mime }), image.filename);
 
   const resp = await fetch(`${BASE}/upload`, { method: 'POST', body: formData });
   const json = await resp.json() as { status: string; subid?: number };
@@ -83,7 +80,16 @@ export async function getCalibration(jobId: number, imgWidth: number, imgHeight:
   const resp = await fetch(`${BASE}/jobs/${jobId}/calibration`);
   if (!resp.ok) throw new Error(`Calibration fetch failed: ${resp.status}`);
   const cal = await resp.json() as {
-    ra: number; dec: number; radius: number; pixscale: number; orientation: number;
+    ra: number; dec: number; radius: number; pixscale: number; orientation: number; parity: number;
   };
-  return { ...cal, width: imgWidth, height: imgHeight };
+  return {
+    ra: cal.ra,
+    dec: cal.dec,
+    radius: cal.radius,
+    pixscale: cal.pixscale,
+    orientation: cal.orientation,
+    parity: cal.parity < 0 ? -1 : 1,
+    width: imgWidth,
+    height: imgHeight,
+  };
 }

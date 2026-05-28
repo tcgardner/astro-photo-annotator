@@ -4,6 +4,7 @@ export interface WCS {
   radius: number;
   pixscale: number;
   orientation: number;
+  parity: 1 | -1;
   width: number;
   height: number;
 }

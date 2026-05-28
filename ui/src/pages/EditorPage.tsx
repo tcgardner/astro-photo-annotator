@@ -8,7 +8,7 @@ import { PlateSolveButton } from '../components/PlateSolveButton';
 export function EditorPage() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
-  const imagePath = params.get('path');
+  const imageId = params.get('id');
 
   const {
     annotation,
@@ -24,27 +24,25 @@ export function EditorPage() {
     updateStyle,
     updateCatalogId,
     exportImage,
-  } = useAnnotation(imagePath);
+  } = useAnnotation(imageId);
 
-  const imageUrl = imagePath ? `/stacks/${imagePath.replace(/\\/g, '/')}` : '';
+  const imageUrl = imageId ? `/api/images/${imageId}/file` : '';
   const hasOverride = annotation?.style !== undefined;
   const isStyleOverride = hasOverride && JSON.stringify(annotation?.style) !== JSON.stringify(defaultStyle);
 
-  function handleResetStyle() {
-    updateStyle(defaultStyle);
-  }
-
-  if (!imagePath) {
+  if (!imageId) {
     return (
       <div className="flex items-center justify-center h-64 text-gray-500">
-        No image selected. <button onClick={() => navigate('/')} className="ml-2 text-blue-400 underline">Browse images</button>
+        No image selected.{' '}
+        <button onClick={() => navigate('/')} className="ml-2 text-blue-400 underline">
+          Browse images
+        </button>
       </div>
     );
   }
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] overflow-hidden">
-      {/* Main canvas area */}
       <div className="flex-1 overflow-auto p-4 flex items-start justify-center bg-black">
         {imageUrl && (
           <AnnotationCanvas
@@ -61,11 +59,12 @@ export function EditorPage() {
         )}
       </div>
 
-      {/* Right sidebar */}
       <div className="w-64 flex flex-col bg-gray-900 border-l border-gray-800 overflow-y-auto">
-        {/* Image info */}
         <div className="px-3 py-2 border-b border-gray-800">
-          <div className="text-xs text-gray-500 truncate" title={imagePath}>{imagePath}</div>
+          <button onClick={() => navigate(-1)} className="text-xs text-gray-400 hover:text-white mb-1">
+            ← Back
+          </button>
+          <div className="text-xs text-gray-500 truncate">Image #{imageId}</div>
           {annotation?.catalogId && (
             <input
               value={annotation.catalogId}
@@ -76,13 +75,11 @@ export function EditorPage() {
           )}
         </div>
 
-        {/* Plate solve */}
         <div className="px-3 py-2 border-b border-gray-800">
           <PlateSolveButton status={solveStatus} onSolve={plateSolve} />
           {error && <div className="text-xs text-red-400 mt-1">{error}</div>}
         </div>
 
-        {/* Object count */}
         <div className="px-3 py-1 border-b border-gray-800 text-xs text-gray-500">
           {markers.length} markers
           {style.catalogs.length > 0 && (
@@ -92,12 +89,10 @@ export function EditorPage() {
           )}
         </div>
 
-        {/* Object list */}
         <div className="flex-1 min-h-0 overflow-y-auto border-b border-gray-800">
           <ObjectList markers={markers} style={style} onChange={updateMarkers} />
         </div>
 
-        {/* Style panel */}
         <div className="px-3 py-3 border-b border-gray-800">
           <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">Style</div>
           <StylePanel
@@ -105,11 +100,10 @@ export function EditorPage() {
             defaultStyle={defaultStyle}
             isOverride={isStyleOverride}
             onChange={updateStyle}
-            onResetToDefault={handleResetStyle}
+            onResetToDefault={() => updateStyle(defaultStyle)}
           />
         </div>
 
-        {/* Export */}
         <div className="px-3 py-3">
           <button
             onClick={exportImage}

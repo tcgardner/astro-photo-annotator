@@ -339,3 +339,186 @@ Objects where `x < 0 || x > width || y < 0 || y > height` are discarded before r
 13. **Implement `StylePanel`** — preset picker (Dense/Minimal/Circles/Crosshairs) + per-field overrides, saved as per-image override; label indicates when the global default is active vs. a local override
 14. **Implement `SettingsPage`** — same `StylePanel` wired to `GET /api/settings` / `PUT /api/settings`; gear icon in nav; shows which preset is the current global default
 15. **Wire up `start.ps1`** and add entry to root `start-all.ps1`
+
+---
+
+## Fix Plan: Issue 1 — Image Source (astro-db instead of STACKS_DIR)
+
+### Problem
+
+The annotator browses a local `STACKS_DIR` folder and serves images via `express.static`. The user wants it to source images from astro-db's renamed-images catalog instead.
+
+### Diagnosis
+
+- `src/routes/images.ts` — `GET /api/images` reads the local filesystem via `readdir`; returns `{ folders, images }` with `url: /stacks/{rel}`
+- `src/main.ts` — mounts `express.static(STACKS_DIR)` at `/stacks` and warns if `STACKS_DIR` is unset
+- `src/routes/solve.ts` — resolves `path.resolve(STACKS_DIR, imagePath)` to get a local file path for Astrometry.net upload
+- `src/routes/annotations.ts` — resolves `path.resolve(STACKS_DIR, ann.imagePath)` to read the original image for sharp export
+- `ui/src/pages/EditorPage.tsx:29` — constructs image URL as `/stacks/${imagePath}`
+- `ui/src/pages/BrowserPage.tsx` — folder-browser UI driven by `?path=` query param; uses `folders`, breadcrumbs, and subpath navigation
+- `.env.example` — already has `ASTRO_DB_URL=http://localhost:3001`
+
+astro-db provides:
+- `GET /api/images` — returns `{ id, filename, original_filename, catalog_id, common_name, captured_at, id_stage, is_primary, created_at }[]`
+- `GET /api/images/:id/file` — streams the image binary
+
+### Key design decision: image identifier
+
+**Before:** images identified by relative path string (e.g. `"2025-10/NGC7000.jpg"`), stored in `annotations.image_path`.
+
+**After:** images identified by astro-db numeric ID (e.g. `42`). Store as the string `"<id>"` in `annotations.image_path` to avoid a schema migration (or rename the column — either works).
+
+### Steps (in order)
+
+**Step 1 — `src/routes/images.ts`: replace folder browse with astro-db proxy**
+
+Delete the current implementation. New `GET /api/images`:
+- Fetch `${ASTRO_DB_URL}/api/images` (with optional `?catalog_id=` passthrough)
+- Map each row to `{ id, catalog_id, filename, common_name, url: `/api/images/${id}/file` }`
+- Check which IDs already have annotations using `getAnnotatedPaths` (adapt to accept string IDs)
+- Return `{ images: [...] }` — no `folders` field; flat list grouped by `catalog_id` if needed
+
+Remove `/api/images/stat` (no longer needed; no local filesystem).
+
+Add `GET /api/images/:id/file` — proxy to `${ASTRO_DB_URL}/api/images/${id}/file`. This keeps all requests on the same origin and avoids CORS.
+
+Remove `STACKS_DIR` from this file.
+
+**Step 2 — `src/main.ts`: remove STACKS_DIR**
+
+- Delete the `express.static(STACKS_DIR)` block and the `STACKS_DIR` constant
+- Delete the `if (!STACKS_DIR) console.warn(...)` line
+- Keep `ASTRO_DB_URL` accessible to routes via env
+
+**Step 3 — `ui/src/pages/BrowserPage.tsx`: replace folder browser with catalog grid**
+
+- Drop `folders`, breadcrumb, `?dir=` param, `DirListing` type, `navigateInto`, `breadcrumbs()`, `setCurrentPath()`
+- New shape: `{ images: { id: number; catalog_id: string; filename: string; url: string; hasAnnotations: boolean }[] }`
+- Render a flat grid of image thumbnails; show `catalog_id` as primary label, `filename` as secondary
+- On click: `navigate(`/annotate?id=${img.id}`)` (change param from `path` to `id`)
+- Empty state message: "No images in astro-db. Upload some via astro-photo-renamer."
+
+**Step 4 — `ui/src/pages/EditorPage.tsx`: switch to ID-based routing**
+
+- Read `id` from `params.get('id')` instead of `params.get('path')`
+- Image URL: `/api/images/${id}/file` (served by the new proxy in Step 1)
+- Pass `imageId` (string `"${id}"`) to `useAnnotation` instead of `imagePath`
+
+**Step 5 — `src/routes/solve.ts`: download image from astro-db for plate solving**
+
+The solve route needs a local file path to upload to Astrometry.net (which requires a multipart file upload). Since images are no longer on disk locally:
+
+- Change request body from `{ imagePath }` to `{ imageId }` (astro-db numeric ID)
+- Before uploading to Astrometry.net, download the image from `${ASTRO_DB_URL}/api/images/${imageId}/file` into a temp file (use `node:os tmpdir + crypto.randomUUID()`)
+- After upload to Astrometry.net, delete the temp file (cleanup in `finally`)
+- For `sharp` metadata (image dimensions): run sharp on the same temp file before deleting it, or stream it twice
+- Store `String(imageId)` as the annotation's `imagePath` in the DB
+
+**Step 6 — `src/routes/annotations.ts`: download from astro-db for sharp export**
+
+The export route reads the original image to composite annotations onto it:
+
+- Replace `path.resolve(STACKS_DIR, ann.imagePath)` with a download from `${ASTRO_DB_URL}/api/images/${ann.imagePath}/file` (where `ann.imagePath` now holds the astro-db ID)
+- Same temp-file pattern as Step 5 — download to temp, run sharp export, delete temp
+- Remove `STACKS_DIR` import; `ASTRO_DB_URL` is already in scope
+
+**Step 7 — `.env.example`: remove STACKS_DIR**
+
+```
+ASTROMETRY_API_KEY=your_astrometry_net_api_key
+ASTRO_DB_URL=http://localhost:3001
+PORT=3003
+DB_PATH=./annotator.db
+```
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/routes/images.ts` | Full rewrite — astro-db proxy, no filesystem |
+| `src/main.ts` | Remove STACKS_DIR constant, static serve, and warning |
+| `src/routes/solve.ts` | Accept `imageId`, download temp file, delete after |
+| `src/routes/annotations.ts` | Download temp file for export instead of reading local path |
+| `ui/src/pages/BrowserPage.tsx` | Flat catalog grid, no folder browser |
+| `ui/src/pages/EditorPage.tsx` | `?id=` param, `/api/images/${id}/file` URL |
+| `.env.example` | Remove `STACKS_DIR` line |
+
+---
+
+## Fix Plan: Issue 2 — Plate Solve Annotations Clustered at Center
+
+### Problem
+
+After plate solving, all annotation markers appear near the image center regardless of the actual positions of objects in the field.
+
+### Diagnosis: confirmed bugs
+
+**Bug A — RA wrapping (`src/lib/wcs.ts:11`)**
+
+```typescript
+const dRa = (objRa - wcs.ra) * Math.cos(centerDecRad);
+```
+
+This naive subtraction does not wrap at the 0°/360° boundary. For a field near RA = 1° containing objects at RA = 359°, `dRa` computes as `≈ −358°` instead of `≈ 2°`. The resulting `pxDist` is astronomically large; objects are filtered out by the bounds check. This removes objects near the RA boundary rather than placing them correctly.
+
+Fix:
+```typescript
+const rawDRa = objRa - wcs.ra;
+const dRa = ((rawDRa + 540) % 360 - 180) * Math.cos(centerDecRad);
+```
+
+**Bug B — Parity ignored (`src/lib/astrometry.ts:88`, `src/lib/wcs.ts`, `src/types.ts`)**
+
+Astrometry.net's calibration endpoint returns a `parity` field (`+1` or `−1`). Parity = −1 is standard for astronomical images (north up, east left). Parity = +1 means the image is a mirror flip (east right).
+
+`getCalibration` discards `parity`; the `WCS` type has no `parity` field. The pixel formula:
+```typescript
+const x = imgCx + pxDist * Math.sin(angle);
+```
+always places east to the right (positive x). For parity = −1 (standard), east should be to the LEFT — the x-offset needs to be negated.
+
+Fixes (three-file change):
+
+1. `src/types.ts` — add `parity: 1 | -1` to `WCS`
+2. `src/lib/astrometry.ts` — capture `parity` from the calibration response and include it in the returned `WCS`
+3. `src/lib/wcs.ts` — apply parity to the x offset:
+   ```typescript
+   const x = imgCx + wcs.parity * pxDist * Math.sin(angle);
+   ```
+
+**Bug C — Root cause of "all at center" (needs runtime investigation)**
+
+The confirmed bugs (A and B) produce wrong positions or missing objects but do not fully explain why ALL objects would cluster precisely at the center. The clustering symptom requires `pxDist ≈ 0` for every object, which means `r ≈ 0`, which means every object's RA/Dec ≈ the field center.
+
+Possible causes not determinable from static analysis:
+
+1. **SIMBAD TAP column ordering** — The query selects `main_id, otype, ra, dec, dist`. If the SIMBAD TAP JSON response reorders columns or inserts extras, `row[2]` and `row[3]` may not be `ra`/`dec`. Fix: read column metadata from the TAP response (`metadata[].name`) and find `ra`/`dec` by name instead of by index.
+
+2. **`pixscale` unit confusion** — If `pixscale` arrives as degrees/pixel rather than arcsec/pixel (e.g. due to a different Astrometry.net endpoint or a misread response), and the formula doesn't divide by 3600, the computed `pxDist` would be 3600× too small, clustering everything near center. Add a runtime assertion: `if (wcs.pixscale > 3600) throw new Error(...)`.
+
+3. **`raDecToPixel` called before WCS is populated** — If the WCS object is partially initialized (e.g. `pixscale = 0`), `pxDist = Infinity → NaN`, and `Math.round(NaN) = NaN`. The bounds check `NaN < 0` is false, so NaN pixels pass the filter and the marker is stored with NaN coords. Depending on how the canvas renders NaN, it may appear at `(0, 0)` or at the center. Add a guard: `if (!wcs.pixscale || !isFinite(wcs.pixscale)) return null`.
+
+### Prioritized fix order
+
+1. **Add debug logging first** (no behavior change) — in `src/lib/simbad.ts`, before calling `raDecToPixel`, log `wcs.ra`, `wcs.dec`, `wcs.pixscale`, `wcs.parity`, and the first 3 rows' `ra`, `dec`, and computed `coords`. This confirms whether the clustering is in the math or upstream.
+
+2. **Fix Bug B (parity)** — highest impact on correctness for standard astronomical images. Three-file change, low risk.
+
+3. **Fix Bug A (RA wrapping)** — one-liner in `wcs.ts`. Fixes object loss near RA=0.
+
+4. **Fix Bug C (column ordering)** — read SIMBAD TAP columns by name from `metadata`. Sample TAP JSON response:
+   ```json
+   { "metadata": [{"name":"main_id"}, {"name":"otype"}, {"name":"ra"}, ...], "data": [[...], ...] }
+   ```
+   Map column names to indices rather than hardcoding `row[2]`, `row[3]`.
+
+5. **Guard against zero/NaN pixscale** — validate the WCS object in `getCalibration` before returning.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/types.ts` | Add `parity: 1 \| -1` to `WCS` |
+| `src/lib/astrometry.ts` | Capture `parity` from calibration; include in returned `WCS` |
+| `src/lib/wcs.ts` | Fix RA wrapping; apply `wcs.parity` to x offset |
+| `src/lib/simbad.ts` | Read column indices from TAP metadata; add debug logging |

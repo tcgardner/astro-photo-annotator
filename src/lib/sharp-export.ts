@@ -85,7 +85,8 @@ function buildSvg(
 }
 
 export async function exportAnnotatedImage(
-  imagePath: string,
+  imageData: Buffer,
+  outputFormat: 'jpeg' | 'png',
   markers: Marker[],
   style: StyleConfig,
   wcs: WCS,
@@ -93,11 +94,8 @@ export async function exportAnnotatedImage(
   const svgString = buildSvg(markers, style, wcs);
   const svgBuffer = Buffer.from(svgString);
 
-  const ext = path.extname(imagePath).toLowerCase();
-  const isJpeg = ext === '.jpg' || ext === '.jpeg';
-
-  const inst = sharp(imagePath).composite([{ input: svgBuffer, gravity: 'northwest' }]);
-  return isJpeg
+  const inst = sharp(imageData).composite([{ input: svgBuffer, gravity: 'northwest' }]);
+  return outputFormat === 'jpeg'
     ? inst.jpeg({ quality: 95 }).toBuffer()
     : inst.png().toBuffer();
 }

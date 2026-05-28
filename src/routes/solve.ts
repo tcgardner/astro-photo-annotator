@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import path from 'node:path';
 import sharp from 'sharp';
 import {
   astrometryLogin,
@@ -17,30 +16,31 @@ import {
 
 export const solveRouter = Router();
 
-const STACKS_DIR = process.env['STACKS_DIR'] ?? '';
+const ASTRO_DB_URL = process.env['ASTRO_DB_URL'] ?? 'http://localhost:3001';
 const API_KEY = process.env['ASTROMETRY_API_KEY'] ?? '';
 
-function fullPath(rel: string): string {
-  return path.resolve(STACKS_DIR, rel);
+async function downloadImage(
+  imageId: number,
+): Promise<{ data: Buffer; mime: string; filename: string }> {
+  const resp = await fetch(`${ASTRO_DB_URL}/api/images/${imageId}/file`);
+  if (!resp.ok) throw new Error(`Failed to download image ${imageId}: ${resp.status}`);
+  const data = Buffer.from(await resp.arrayBuffer());
+  const mime = resp.headers.get('content-type') ?? 'image/jpeg';
+  const ext = mime.includes('png') ? '.png' : '.jpg';
+  return { data, mime, filename: `image_${imageId}${ext}` };
 }
 
-// POST /api/solve — upload image, kick off background solve pipeline
+// POST /api/solve — download from astro-db, submit to Astrometry.net, run pipeline in background
 solveRouter.post('/', async (req, res) => {
-  const { imagePath } = req.body as { imagePath?: string };
-  if (!imagePath) { res.status(400).json({ error: 'imagePath required' }); return; }
+  const { imageId } = req.body as { imageId?: number };
+  if (!imageId) { res.status(400).json({ error: 'imageId required' }); return; }
 
-  const imgFull = fullPath(imagePath);
+  const imagePath = String(imageId);
 
-  // Return cached result if already solved
   const annId = upsertAnnotationPath(imagePath);
   const existing = getAnnotationById(annId);
   if (existing?.solveStatus === 'solved') {
-    res.json({
-      id: annId,
-      status: 'solved',
-      wcs: existing.wcs,
-      markers: existing.markers,
-    });
+    res.json({ id: annId, status: 'solved', wcs: existing.wcs, markers: existing.markers });
     return;
   }
 
@@ -48,14 +48,14 @@ solveRouter.post('/', async (req, res) => {
 
   try {
     updateAnnotationSolve(annId, { solveStatus: 'uploading' });
+    const image = await downloadImage(imageId);
     const session = await astrometryLogin(API_KEY);
-    const subId = await astrometryUpload(session, imgFull);
+    const subId = await astrometryUpload(session, image);
     updateAnnotationSolve(annId, { solveStatus: 'solving', astrometrySubId: subId });
 
-    // Respond immediately — background runs the rest
     res.json({ id: annId, status: 'solving' });
 
-    runPipeline(annId, subId, imagePath, imgFull).catch(err => {
+    runPipeline(annId, subId, image).catch(err => {
       console.error('[solve] pipeline error:', (err as Error).message);
       updateAnnotationSolve(annId, { solveStatus: 'failed' });
     });
@@ -68,8 +68,7 @@ solveRouter.post('/', async (req, res) => {
 async function runPipeline(
   annId: number,
   subId: number,
-  imagePath: string,
-  imgFull: string,
+  image: { data: Buffer; filename: string },
 ): Promise<void> {
   const jobId = await pollSubmission(subId);
   const jobStatus = await pollJob(jobId);
@@ -79,24 +78,17 @@ async function runPipeline(
     return;
   }
 
-  const meta = await sharp(imgFull).metadata();
+  const meta = await sharp(image.data).metadata();
   const imgW = meta.width ?? 0;
   const imgH = meta.height ?? 0;
 
   const wcs = await getCalibration(jobId, imgW, imgH);
   const markers = await querySimbadAll(wcs);
 
-  // Primary catalog ID = first marker's label (closest to field center)
   const primaryLabel = markers[0]?.label ?? null;
 
-  updateAnnotationSolve(annId, {
-    solveStatus: 'solved',
-    wcs,
-    markers,
-    catalogId: primaryLabel,
-  });
-
-  console.log(`[solve] ${path.basename(imagePath)} → solved, ${markers.length} objects`);
+  updateAnnotationSolve(annId, { solveStatus: 'solved', wcs, markers, catalogId: primaryLabel });
+  console.log(`[solve] ${image.filename} → solved, ${markers.length} objects`);
 }
 
 // GET /api/solve/:id/status — poll solve status from DB
