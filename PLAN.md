@@ -824,3 +824,410 @@ The button's "Solved ✓" label and `cursor-default` style give no affordance th
 | `src/routes/solve.ts` | Remove solved-bailout; call `resetAnnotationSolve` before new solve; add entry log |
 | `src/lib/astrometry.ts` | Log full response on login/upload failure |
 | `ui/src/components/PlateSolveButton.tsx` | "Re-solve ↺" label + clickable style for solved state |
+
+---
+
+## Improvement Plan: 2026-05-29 — UX Polish (Four Features)
+
+### Feature 1 — Marker list height (ObjectList fills available sidebar space)
+
+**Diagnosis.**
+
+`EditorPage` renders the sidebar as:
+```tsx
+<div className="w-64 flex flex-col bg-gray-900 border-l border-gray-800 overflow-y-auto">
+```
+
+The sidebar has `overflow-y-auto` on the outer container AND `flex-col` — but several of its children (the header block, PlateSolveButton block, marker count line, MarkerOverridePanel block, StylePanel block, Export button block) are fixed-height `div`s with no `flex-shrink-0` constraint, and the `ObjectList` wrapper div has `flex-1 min-h-0` — which looks correct. However, the outer sidebar itself has `overflow-y-auto`, which causes the sidebar to scroll as a whole instead of letting the `ObjectList` section scroll internally. When the outer container overflows, the whole sidebar scrolls, and the inner `flex-1` on the ObjectList never gets space to grow because the parent's height is unconstrained by the outer scroll container.
+
+**Root cause — confirmed by reading `EditorPage.tsx:70`:**
+- Outer sidebar: `overflow-y-auto` → makes its height unconstrained (content-height), so `flex-1` children inside never fill remaining space
+- ObjectList wrapper: `flex-1 min-h-0 overflow-y-auto` (line 100) — looks right, but the `flex-1` resolves to "1/∞ height" ≈ content size when the parent is scroll-unlimited
+- `ObjectList` itself: `overflow-y-auto flex-1 text-xs` (its own div) — redundant `overflow-y-auto` on both wrapper and self
+
+**Fix — `ui/src/pages/EditorPage.tsx`.**
+
+Remove `overflow-y-auto` from the outer sidebar `div`. The sidebar is already inside a `h-[calc(100vh-3.5rem)]` parent with `overflow-hidden`. Without `overflow-y-auto`, the sidebar height is bounded by its parent, so `flex-1` on the ObjectList wrapper correctly fills remaining space.
+
+Change line 70 from:
+```tsx
+<div className="w-64 flex flex-col bg-gray-900 border-l border-gray-800 overflow-y-auto">
+```
+to:
+```tsx
+<div className="w-64 flex flex-col bg-gray-900 border-l border-gray-800 overflow-hidden">
+```
+
+The ObjectList wrapper on line 100 already has `flex-1 min-h-0 overflow-y-auto` and `ObjectList` itself already has `overflow-y-auto flex-1` — those are correct and need no changes. The `MarkerOverridePanel` block (line 104), `StylePanel` block (line 122), and Export block (line 132) should each get `flex-shrink-0` to prevent them from being squashed by the growing ObjectList:
+
+```tsx
+// Lines 104, 122, 132 — add flex-shrink-0 to each wrapper div
+<div className="flex-shrink-0 px-3 py-3 border-b border-gray-800">
+```
+
+**Files changed:** `ui/src/pages/EditorPage.tsx` — remove `overflow-y-auto` from sidebar wrapper, add `flex-shrink-0` to MarkerOverridePanel/StylePanel/Export wrapper divs.
+
+---
+
+### Feature 2 — Move/hide/resize individual plate-solved annotations
+
+**Current state (confirmed by reading source):**
+
+- **Drag** — already wired: `useDrag` in `AnnotationCanvas`, `startDrag(m.id)` passed as `onDragStart` to `MarkerGroup`, and `sharedProps.onMouseDown = onDragStart` applied to the shape element. Dragging the circle/crosshair/dot moves the whole marker.
+- **Hide/show toggle** — already wired in `ObjectList.tsx` (eye button calls `toggleVisible`), and `MarkerGroup` returns `null` when `!marker.visible`. The `Marker.visible` field already exists in `src/types.ts`.
+- **Per-marker circle radius** — already implemented end-to-end: `MarkerStyleOverrides.circleRadius` in `types.ts`, read by `MarkerGroup.tsx:21` (`marker.overrides?.circleRadius ?? style.circleRadius`), editable via `MarkerOverridePanel` radius slider (range 4–100), saved through `updateMarkers` in `EditorPage`, and applied at export in `sharp-export.ts:24`.
+
+**What is missing / needs improvement:**
+
+**2a — Drag handle visibility.** Currently the cursor only changes to `move` when `selected === true` (line 41 of `MarkerGroup.tsx`). Unselected markers show `pointer` cursor. There is no visual drag handle. Users may not discover that markers are draggable.
+
+Fix — `ui/src/components/MarkerGroup.tsx`:
+- When `selected === true`, render a small drag-handle indicator: a `<circle>` of radius 4 at `(x + r + 2, y)` filled with the highlight color and a `cursor: grab` style. This makes the affordance explicit.
+- Alternatively (simpler): always show `cursor: grab` on the shape when selected instead of `cursor: move`. Either approach is acceptable.
+
+**2b — The eye icon in ObjectList uses emoji `👁` (unicode) which may render poorly.** Replace with an SVG icon or ASCII toggle. Low priority — functional as-is.
+
+**2c — Hide suppresses canvas rendering but canvas catalog filter (`style.catalogs`) can also hide markers.** Both code paths coexist correctly — `MarkerGroup` returns null for `!marker.visible` (line 15), and `ObjectList` dims opacity-40 for hidden markers. No change needed here.
+
+**2d — Export correctly respects `visible` flag** — confirmed in `sharp-export.ts:18` (`if (!marker.visible) return ''`). No change needed.
+
+**Summary of actual gaps:**
+- The drag handle visual is the only UX gap for Feature 2. The rest is already implemented.
+- Optionally: emit a `onDragStart` event from the label text as well, so users can drag by grabbing the text — currently only the shape element (`circle`/`crosshair`) fires `onDragStart`; the `<text>` element only fires `onClick={onSelect}` with no drag.
+
+Fix for label-drag — `ui/src/components/MarkerGroup.tsx`: add `onMouseDown: onDragStart` to the `<text>` element (same `sharedProps` already used on the shape, or spread individually). This lets users drag either the circle or the label to move the whole marker.
+
+**Files changed:** `ui/src/components/MarkerGroup.tsx` — add drag affordance to selected marker; add `onMouseDown={onDragStart}` to `<text>` element.
+
+No data model changes needed for Feature 2.
+
+---
+
+### Feature 3 — Text label independent movement
+
+**Goal:** Add `labelDx` and `labelDy` pixel offsets (relative to marker center) to each marker so the label can be repositioned independently from the circle. Make the label independently draggable in the canvas.
+
+**3a — Data model — `src/types.ts`.**
+
+Add two optional fields to `MarkerStyleOverrides`:
+```typescript
+export interface MarkerStyleOverrides {
+  circleRadius?: number;
+  fontSize?: number;
+  labelOffset?: { x: number; y: number };  // existing — global offset from StyleConfig
+  labelDx?: number;   // NEW — absolute pixel offset of label anchor from marker center (x)
+  labelDy?: number;   // NEW — absolute pixel offset of label anchor from marker center (y)
+}
+```
+
+`labelDx`/`labelDy` are absolute pixel positions relative to the marker center, independent of the `nearRight` flip logic. When set, they override the `nearRight`-based automatic placement entirely.
+
+Default behavior (when `labelDx`/`labelDy` are `undefined`): existing `nearRight ? x - r - lo.x : x + r + lo.x` logic unchanged.
+
+**3b — Label position resolution — `ui/src/components/MarkerGroup.tsx`.**
+
+Replace the current label position computation (lines 25–28):
+```typescript
+// Current:
+const nearRight = x > imgWidth * 0.85;
+const labelX = nearRight ? x - r - lo.x : x + r + lo.x;
+const labelAnchor = nearRight ? 'end' : 'start';
+const labelY = y + lo.y;
+```
+With:
+```typescript
+// New:
+let labelX: number;
+let labelY: number;
+let labelAnchor: string;
+
+if (marker.overrides?.labelDx !== undefined || marker.overrides?.labelDy !== undefined) {
+  // Independent label placement — override nearRight logic entirely
+  const dx = marker.overrides.labelDx ?? 0;
+  const dy = marker.overrides.labelDy ?? (r + fontSize + lo.y);
+  labelX = x + dx;
+  labelY = y + dy;
+  labelAnchor = dx >= 0 ? 'start' : 'end';
+} else {
+  // Existing auto-placement
+  const nearRight = x > imgWidth * 0.85;
+  labelX = nearRight ? x - r - lo.x : x + r + lo.x;
+  labelAnchor = nearRight ? 'end' : 'start';
+  labelY = y + lo.y;
+}
+```
+
+**3c — Independent label drag — `ui/src/hooks/useDrag.ts`.**
+
+The current hook tracks a single `draggingId` that moves marker `x`/`y`. Label dragging needs to update `overrides.labelDx`/`overrides.labelDy` instead. Extend the hook to support a `dragMode`:
+
+```typescript
+type DragMode = 'marker' | 'label';
+
+// Change internal ref:
+const draggingRef = useRef<{ id: string; mode: DragMode } | null>(null);
+```
+
+Change the `startDrag` factory to accept a mode parameter:
+```typescript
+function startDrag(id: string, mode: DragMode = 'marker') {
+  return (e: React.MouseEvent) => {
+    e.stopPropagation();
+    draggingRef.current = { id, mode };
+  };
+}
+```
+
+The `onMove` callback signature becomes:
+```typescript
+onMove: (id: string, x: number, y: number, mode: DragMode) => void
+```
+
+**3d — Wire label drag in `AnnotationCanvas.tsx`.**
+
+Add a `startLabelDrag` function alongside `startDrag` in `AnnotationCanvas`, using `startDrag(m.id, 'label')`.
+
+In the `useDrag` `onMove` callback, branch on mode:
+```typescript
+(id, x, y, mode) => {
+  if (mode === 'marker') {
+    // existing: update marker x, y (and RA/Dec if WCS available)
+    onChange(markers.map(m => {
+      if (m.id !== id) return m;
+      const updated: Marker = { ...m, x, y };
+      if (wcs && m.ra !== undefined) {
+        const { ra, dec } = pixelToRaDec(x, y, wcs);
+        updated.ra = ra;
+        updated.dec = dec;
+      }
+      return updated;
+    }));
+  } else {
+    // label drag: update overrides.labelDx/labelDy (relative to marker center)
+    onChange(markers.map(m => {
+      if (m.id !== id) return m;
+      return {
+        ...m,
+        overrides: {
+          ...m.overrides,
+          labelDx: x - m.x,
+          labelDy: y - m.y,
+        },
+      };
+    }));
+  }
+}
+```
+
+Pass `startLabelDrag` as a new prop to `MarkerGroup`:
+```typescript
+// MarkerGroup Props interface — new prop:
+onLabelDragStart: (e: React.MouseEvent) => void;
+```
+
+Apply it to the `<text>` element:
+```tsx
+<text
+  ...
+  onMouseDown={onLabelDragStart}   // was: not present (or just onDragStart)
+  onClick={onSelect}
+>
+```
+
+**3e — MarkerOverridePanel — expose labelDx/labelDy.**
+
+Add two number inputs to `MarkerOverridePanel` below the existing "Label offset X/Y" section:
+
+```tsx
+<div>
+  <div className="text-gray-400 mb-1">
+    Label position (absolute)
+    {ov.labelDx === undefined && <span className="text-gray-600 ml-1">(auto)</span>}
+  </div>
+  <div className="flex gap-2">
+    <label className="flex-1">
+      <span className="text-gray-500">dX</span>
+      <input type="number" min={-500} max={500}
+        value={ov.labelDx ?? 0}
+        onChange={e => patch({ labelDx: parseInt(e.target.value, 10) || 0 })}
+        className="w-full bg-gray-800 text-white text-xs rounded px-1 py-0.5 border border-gray-700 mt-0.5"
+      />
+    </label>
+    <label className="flex-1">
+      <span className="text-gray-500">dY</span>
+      <input type="number" min={-500} max={500}
+        value={ov.labelDy ?? 0}
+        onChange={e => patch({ labelDy: parseInt(e.target.value, 10) || 0 })}
+        className="w-full bg-gray-800 text-white text-xs rounded px-1 py-0.5 border border-gray-700 mt-0.5"
+      />
+    </label>
+  </div>
+</div>
+```
+
+Also update the `hasAny` check to include `labelDx`/`labelDy`:
+```typescript
+const hasAny = ov.circleRadius !== undefined || ov.fontSize !== undefined
+  || ov.labelOffset !== undefined || ov.labelDx !== undefined || ov.labelDy !== undefined;
+```
+
+**3f — sharp-export.ts — apply `labelDx`/`labelDy`.**
+
+In `buildMarkerSvg`, replace the current label position computation (lines 27–30) with the same branching logic as `MarkerGroup.tsx`:
+```typescript
+let labelX: number;
+let labelY: number;
+let labelAnchor: string;
+
+if (marker.overrides?.labelDx !== undefined || marker.overrides?.labelDy !== undefined) {
+  const dx = marker.overrides.labelDx ?? 0;
+  const dy = marker.overrides.labelDy ?? (r + fontSize + lo.y);
+  labelX = x + dx;
+  labelY = y + dy;
+  labelAnchor = dx >= 0 ? 'start' : 'end';
+} else {
+  const nearRightEdge = x > imgWidth * 0.85;
+  labelX = nearRightEdge ? x - r - lo.x : x + r + lo.x;
+  labelAnchor = nearRightEdge ? 'end' : 'start';
+  labelY = y + lo.y;
+}
+```
+
+**Files changed:**
+| File | Change |
+|------|--------|
+| `src/types.ts` | Add `labelDx?: number`, `labelDy?: number` to `MarkerStyleOverrides` |
+| `ui/src/hooks/useDrag.ts` | Add `DragMode` type; change `draggingId` ref to `{ id, mode }`; update `startDrag(id, mode)` signature; pass `mode` to `onMove` callback |
+| `ui/src/components/AnnotationCanvas.tsx` | Branch `onMove` on mode ('marker' vs 'label'); add `startLabelDrag`; pass `onLabelDragStart` to `MarkerGroup` |
+| `ui/src/components/MarkerGroup.tsx` | Accept `onLabelDragStart` prop; apply independent label position logic; attach `onMouseDown={onLabelDragStart}` to `<text>` |
+| `ui/src/components/MarkerOverridePanel.tsx` | Add `labelDx`/`labelDy` inputs; update `hasAny` check |
+| `src/lib/sharp-export.ts` | Apply `labelDx`/`labelDy` override in `buildMarkerSvg` |
+
+---
+
+### Feature 4 — Leader line from marker circle to text label
+
+**Goal:** When the label has been moved away from its default position (i.e., `labelDx`/`labelDy` are set), draw a thin line from the edge of the circle to the label anchor point.
+
+**4a — Data model — `src/types.ts`.**
+
+Add `showLeaderLine?: boolean` to `MarkerStyleOverrides`:
+```typescript
+export interface MarkerStyleOverrides {
+  circleRadius?: number;
+  fontSize?: number;
+  labelOffset?: { x: number; y: number };
+  labelDx?: number;
+  labelDy?: number;
+  showLeaderLine?: boolean;  // NEW — default: true when labelDx/labelDy non-zero beyond threshold
+}
+```
+
+**4b — Leader line rendering logic (shared between `MarkerGroup.tsx` and `sharp-export.ts`).**
+
+The leader line runs from the circle edge to the label anchor. Circle edge point: intersection of the line from `(x, y)` toward `(labelX, labelY)` with the circle of radius `r`.
+
+```typescript
+function leaderLinePoints(
+  cx: number, cy: number, r: number,
+  labelX: number, labelY: number
+): { x1: number; y1: number; x2: number; y2: number } {
+  const dx = labelX - cx;
+  const dy = labelY - cy;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist === 0) return { x1: cx, y1: cy, x2: labelX, y2: labelY };
+  const x1 = cx + (dx / dist) * r;
+  const y1 = cy + (dy / dist) * r;
+  return { x1, y1, x2: labelX, y2: labelY };
+}
+```
+
+**Threshold for auto-show:** The leader line is shown when `showLeaderLine` is explicitly `true`, OR when `showLeaderLine` is `undefined` (the default) AND the label offset distance exceeds `r + 4` pixels:
+```typescript
+const dist = Math.sqrt((labelX - x) ** 2 + (labelY - y) ** 2);
+const autoShow = dist > r + 4;
+const drawLeaderLine = marker.overrides?.showLeaderLine ?? autoShow;
+```
+
+**4c — `ui/src/components/MarkerGroup.tsx`.**
+
+Extract the `leaderLinePoints` helper (or inline it). After computing `labelX`/`labelY`, compute whether to show the leader line and render:
+
+```tsx
+{drawLeaderLine && style.showLabels && marker.markerStyle !== 'crosshair' && (
+  <line
+    x1={lp.x1} y1={lp.y1}
+    x2={lp.x2} y2={lp.y2}
+    stroke={highlightColor}
+    strokeWidth={sw * 0.5}
+    strokeDasharray="4 3"
+    opacity={0.6}
+    style={{ pointerEvents: 'none' }}
+  />
+)}
+```
+
+The `pointerEvents: none` ensures the line doesn't interfere with click/drag on the label. Place the `<line>` element before the `<text>` element in the `<g>` so it renders behind the label.
+
+For `crosshair` markers, skip the leader line (the crosshair arms already extend outward; a leader line would be visually confusing).
+
+**4d — `src/lib/sharp-export.ts` — add leader line to SVG.**
+
+In `buildMarkerSvg`, after computing `drawLeaderLine` and `leaderLinePoints`, prepend a `<line>` element to the output:
+
+```typescript
+const leaderSvg = (drawLeaderLine && style.showLabels && marker.markerStyle !== 'crosshair')
+  ? '<line x1="' + lp.x1.toFixed(1) + '" y1="' + lp.y1.toFixed(1)
+    + '" x2="' + lp.x2.toFixed(1) + '" y2="' + lp.y2.toFixed(1) + '"'
+    + ' stroke="' + color + '" stroke-width="' + (sw * 0.5).toFixed(1) + '"'
+    + ' stroke-dasharray="4 3" opacity="0.6"/>'
+  : '';
+```
+
+Include `leaderSvg` in each branch of the return value (circle, dot, crosshair — crosshair gets `''`).
+
+**4e — `ui/src/components/MarkerOverridePanel.tsx` — toggle.**
+
+Add a checkbox below the label position inputs:
+```tsx
+<label className="flex items-center gap-2 mt-1">
+  <input
+    type="checkbox"
+    checked={ov.showLeaderLine ?? true}
+    onChange={e => patch({ showLeaderLine: e.target.checked })}
+    className="accent-indigo-500"
+  />
+  <span className="text-gray-400">Show leader line</span>
+</label>
+```
+
+Only show this control when `labelDx`/`labelDy` are set (i.e., the label has been independently moved), to avoid confusing users who haven't moved their labels:
+```tsx
+{(ov.labelDx !== undefined || ov.labelDy !== undefined) && (
+  <label ...>...</label>
+)}
+```
+
+**Files changed:**
+| File | Change |
+|------|--------|
+| `src/types.ts` | Add `showLeaderLine?: boolean` to `MarkerStyleOverrides` |
+| `ui/src/components/MarkerGroup.tsx` | Compute `drawLeaderLine`, `leaderLinePoints`; render `<line>` before `<text>` |
+| `src/lib/sharp-export.ts` | Compute `drawLeaderLine`, `leaderLinePoints`; prepend `<line>` SVG string in `buildMarkerSvg` |
+| `ui/src/components/MarkerOverridePanel.tsx` | Add `showLeaderLine` checkbox (visible when labelDx/labelDy are set) |
+
+---
+
+### Cross-cutting notes
+
+**`leaderLinePoints` duplication.** The same geometry function is needed in both `MarkerGroup.tsx` (React) and `sharp-export.ts` (Node). Options:
+- Extract to `ui/src/lib/markerGeometry.ts` for the client side, and duplicate (or symlink) for the server. Given the function is 8 lines, duplication is acceptable.
+- Alternatively, move it to `src/lib/markerGeometry.ts` (server-side shared lib) and import it in `sharp-export.ts`, while duplicating the same pure function in `ui/src/lib/markerGeometry.ts`. Since the server and client are separate TypeScript projects with separate `tsconfig.json` files, they cannot share source directly without a workspace package.
+
+**Persistence.** All new fields (`labelDx`, `labelDy`, `showLeaderLine`) live inside `Marker.overrides` which is serialised as JSON in the `markers_json` DB column. No DB schema migration is needed — the column already stores arbitrary JSON, and the new fields are optional with backward-compatible defaults.
+
+**Build order for implementation:**
+1. Feature 1 (CSS fix) — isolated, no other dependencies
+2. Feature 2 (drag handle + label drag wiring) — depends on no new types
+3. Feature 3 (independent label position) — add types, update useDrag, wire AnnotationCanvas + MarkerGroup + MarkerOverridePanel + sharp-export
+4. Feature 4 (leader line) — depends on Feature 3's `labelDx`/`labelDy` being in place

@@ -14,54 +14,94 @@ function markerColor(marker: Marker, style: StyleConfig): string {
   return style.catalogColors[marker.catalog] ?? '#ffffff';
 }
 
+function circleEdgePoint(
+  cx: number, cy: number, r: number,
+  labelX: number, labelY: number,
+): { x: number; y: number } {
+  const dx = labelX - cx;
+  const dy = labelY - cy;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist === 0) return { x: cx, y: cy };
+  return { x: cx + (dx / dist) * r, y: cy + (dy / dist) * r };
+}
+
 function buildMarkerSvg(marker: Marker, style: StyleConfig, imgWidth: number): string {
   if (!marker.visible) return '';
 
   const { x, y } = marker;
   const color = markerColor(marker, style);
   const sw = style.strokeWidth;
-  // Per-marker overrides take precedence over global style
   const r = marker.overrides?.circleRadius ?? style.circleRadius;
   const fontSize = marker.overrides?.fontSize ?? style.fontSize;
   const lo = marker.overrides?.labelOffset ?? style.labelOffset;
-  const nearRightEdge = x > imgWidth * 0.85;
-  const labelX = nearRightEdge ? x - r - lo.x : x + r + lo.x;
-  const labelAnchor = nearRightEdge ? 'end' : 'start';
-  const labelY = y + lo.y;
+
+  let labelX: number;
+  let labelY: number;
+  let labelAnchor: string;
+
+  if (marker.overrides?.labelDx !== undefined || marker.overrides?.labelDy !== undefined) {
+    const dx = marker.overrides.labelDx ?? 0;
+    const dy = marker.overrides.labelDy ?? (r + fontSize + lo.y);
+    labelX = x + dx;
+    labelY = y + dy;
+    labelAnchor = dx >= 0 ? 'start' : 'end';
+  } else {
+    const nearRightEdge = x > imgWidth * 0.85;
+    labelX = nearRightEdge ? x - r - lo.x : x + r + lo.x;
+    labelAnchor = nearRightEdge ? 'end' : 'start';
+    labelY = y + lo.y;
+  }
+
   const safeLabel = escapeXml(marker.label);
 
+  const labelDist = Math.sqrt((labelX - x) ** 2 + (labelY - y) ** 2);
+  const autoShowLeader =
+    (marker.overrides?.labelDx !== undefined || marker.overrides?.labelDy !== undefined) &&
+    labelDist > r + 4;
+  const drawLeaderLine = marker.overrides?.showLeaderLine ?? autoShowLeader;
+  const leaderPt = circleEdgePoint(x, y, r, labelX, labelY);
+
+  const leaderSvg =
+    drawLeaderLine && style.showLabels && marker.markerStyle !== 'crosshair'
+      ? '<line x1="' + leaderPt.x.toFixed(1) + '" y1="' + leaderPt.y.toFixed(1) +
+        '" x2="' + labelX.toFixed(1) + '" y2="' + labelY.toFixed(1) + '"' +
+        ' stroke="' + color + '" stroke-width="' + (sw * 0.5).toFixed(1) + '"' +
+        ' stroke-dasharray="4 3" opacity="0.6"/>'
+      : '';
+
   const labelSvg = style.showLabels
-    ? '<text x="' + labelX + '" y="' + labelY + '"'
-      + ' font-family="monospace" font-size="' + fontSize + '"'
-      + ' fill="' + color + '" text-anchor="' + labelAnchor + '"'
-      + ' stroke="black" stroke-width="' + (sw * 0.4) + '"'
-      + ' paint-order="stroke fill">' + safeLabel + '</text>'
+    ? '<text x="' + labelX + '" y="' + labelY + '"' +
+      ' font-family="monospace" font-size="' + fontSize + '"' +
+      ' fill="' + color + '" text-anchor="' + labelAnchor + '"' +
+      ' stroke="black" stroke-width="' + (sw * 0.4) + '"' +
+      ' paint-order="stroke fill">' + safeLabel + '</text>'
     : '';
 
   if (marker.markerStyle === 'crosshair') {
     const size = r;
     const gap = Math.round(r * 0.35);
-    return '<g>'
-      + '<line x1="' + (x - size) + '" y1="' + y + '" x2="' + (x - gap) + '" y2="' + y + '" stroke="' + color + '" stroke-width="' + sw + '"/>'
-      + '<line x1="' + (x + gap) + '" y1="' + y + '" x2="' + (x + size) + '" y2="' + y + '" stroke="' + color + '" stroke-width="' + sw + '"/>'
-      + '<line x1="' + x + '" y1="' + (y - size) + '" x2="' + x + '" y2="' + (y - gap) + '" stroke="' + color + '" stroke-width="' + sw + '"/>'
-      + '<line x1="' + x + '" y1="' + (y + gap) + '" x2="' + x + '" y2="' + (y + size) + '" stroke="' + color + '" stroke-width="' + sw + '"/>'
-      + labelSvg
-      + '</g>';
+    return '<g>' +
+      '<line x1="' + (x - size) + '" y1="' + y + '" x2="' + (x - gap) + '" y2="' + y + '" stroke="' + color + '" stroke-width="' + sw + '"/>' +
+      '<line x1="' + (x + gap) + '" y1="' + y + '" x2="' + (x + size) + '" y2="' + y + '" stroke="' + color + '" stroke-width="' + sw + '"/>' +
+      '<line x1="' + x + '" y1="' + (y - size) + '" x2="' + x + '" y2="' + (y - gap) + '" stroke="' + color + '" stroke-width="' + sw + '"/>' +
+      '<line x1="' + x + '" y1="' + (y + gap) + '" x2="' + x + '" y2="' + (y + size) + '" stroke="' + color + '" stroke-width="' + sw + '"/>' +
+      labelSvg +
+      '</g>';
   }
 
   if (marker.markerStyle === 'dot') {
-    return '<g>'
-      + '<circle cx="' + x + '" cy="' + y + '" r="' + Math.max(2, Math.round(r / 3)) + '" fill="' + color + '"/>'
-      + labelSvg
-      + '</g>';
+    return '<g>' +
+      '<circle cx="' + x + '" cy="' + y + '" r="' + Math.max(2, Math.round(r / 3)) + '" fill="' + color + '"/>' +
+      leaderSvg +
+      labelSvg +
+      '</g>';
   }
 
-  // default: circle
-  return '<g>'
-    + '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="none" stroke="' + color + '" stroke-width="' + sw + '"/>'
-    + labelSvg
-    + '</g>';
+  return '<g>' +
+    '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="none" stroke="' + color + '" stroke-width="' + sw + '"/>' +
+    leaderSvg +
+    labelSvg +
+    '</g>';
 }
 
 function buildSvg(markers: Marker[], style: StyleConfig, wcs: WCS): string {
@@ -74,11 +114,11 @@ function buildSvg(markers: Marker[], style: StyleConfig, wcs: WCS): string {
 
   const markerSvgs = visibleMarkers.map(m => buildMarkerSvg(m, style, width)).join('\n');
 
-  return '<svg xmlns="http://www.w3.org/2000/svg"'
-    + ' width="' + width + '" height="' + height + '"'
-    + ' viewBox="0 0 ' + width + ' ' + height + '">\n'
-    + markerSvgs + '\n'
-    + '</svg>';
+  return '<svg xmlns="http://www.w3.org/2000/svg"' +
+    ' width="' + width + '" height="' + height + '"' +
+    ' viewBox="0 0 ' + width + ' ' + height + '">\n' +
+    markerSvgs + '\n' +
+    '</svg>';
 }
 
 export async function exportAnnotatedImage(

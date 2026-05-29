@@ -67,8 +67,8 @@ export function EditorPage() {
         )}
       </div>
 
-      <div className="w-64 flex flex-col bg-gray-900 border-l border-gray-800 overflow-y-auto">
-        <div className="px-3 py-2 border-b border-gray-800">
+      <div className="w-64 flex flex-col bg-gray-900 border-l border-gray-800 overflow-hidden">
+        <div className="flex-shrink-0 px-3 py-2 border-b border-gray-800">
           <button onClick={() => navigate(-1)} className="text-xs text-gray-400 hover:text-white mb-1">
             Back
           </button>
@@ -83,12 +83,12 @@ export function EditorPage() {
           )}
         </div>
 
-        <div className="px-3 py-2 border-b border-gray-800">
+        <div className="flex-shrink-0 px-3 py-2 border-b border-gray-800">
           <PlateSolveButton status={solveStatus} onSolve={plateSolve} />
           {error && <div className="text-xs text-red-400 mt-1">{error}</div>}
         </div>
 
-        <div className="px-3 py-1 border-b border-gray-800 text-xs text-gray-500">
+        <div className="flex-shrink-0 px-3 py-1 border-b border-gray-800 text-xs text-gray-500">
           {markers.length} markers
           {style.catalogs.length > 0 && (
             <span className="ml-1 text-gray-600">
@@ -102,7 +102,7 @@ export function EditorPage() {
         </div>
 
         {selectedMarker && (
-          <div className="px-3 py-3 border-b border-gray-800">
+          <div className="flex-shrink-0 px-3 py-3 border-b border-gray-800">
             <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">
               Marker: {selectedMarker.label}
             </div>
@@ -119,7 +119,7 @@ export function EditorPage() {
           </div>
         )}
 
-        <div className="px-3 py-3 border-b border-gray-800">
+        <div className="flex-shrink-0 px-3 py-3 border-b border-gray-800">
           <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">Style</div>
           <StylePanel
             style={style}
@@ -130,7 +130,7 @@ export function EditorPage() {
           />
         </div>
 
-        <div className="px-3 py-3">
+        <div className="flex-shrink-0 px-3 py-3">
           <button
             onClick={exportImage}
             disabled={!annotation || solveStatus !== 'solved' || loading}
@@ -143,8 +143,7 @@ export function EditorPage() {
           )}
           {exportResult && (
             <div className="mt-2 text-xs text-green-400">
-              Uploaded
-              {' '}
+              Uploaded{' '}
               <a href={exportResult.fileUrl} target="_blank" rel="noreferrer" className="underline">
                 View in astro-db
               </a>

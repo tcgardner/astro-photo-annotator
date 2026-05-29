@@ -7,25 +7,53 @@ interface Props {
   selected: boolean;
   onSelect: (e: React.MouseEvent) => void;
   onDragStart: (e: React.MouseEvent) => void;
+  onLabelDragStart?: (e: React.MouseEvent) => void;
   onDelete: () => void;
   onLabelEdit: (label: string) => void;
 }
 
-export function MarkerGroup({ marker, style, imgWidth, selected, onSelect, onDragStart, onDelete, onLabelEdit }: Props) {
+function circleEdgePoint(cx: number, cy: number, r: number, labelX: number, labelY: number) {
+  const dx = labelX - cx;
+  const dy = labelY - cy;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist === 0) return { x: cx, y: cy };
+  return { x: cx + (dx / dist) * r, y: cy + (dy / dist) * r };
+}
+
+export function MarkerGroup({ marker, style, imgWidth, selected, onSelect, onDragStart, onLabelDragStart, onDelete, onLabelEdit }: Props) {
   if (!marker.visible) return null;
   if (style.catalogs.length > 0 && !style.catalogs.includes(marker.catalog)) return null;
 
   const { x, y } = marker;
   const color = style.catalogColors[marker.catalog] ?? '#ffffff';
-  // Per-marker overrides take precedence over global style
   const r = marker.overrides?.circleRadius ?? style.circleRadius;
   const sw = style.strokeWidth;
   const fontSize = marker.overrides?.fontSize ?? style.fontSize;
   const lo = marker.overrides?.labelOffset ?? style.labelOffset;
-  const nearRight = x > imgWidth * 0.85;
-  const labelX = nearRight ? x - r - lo.x : x + r + lo.x;
-  const labelAnchor = nearRight ? 'end' : 'start';
-  const labelY = y + lo.y;
+
+  let labelX: number;
+  let labelY: number;
+  let labelAnchor: "start" | "end";
+
+  if (marker.overrides?.labelDx !== undefined || marker.overrides?.labelDy !== undefined) {
+    const dx = marker.overrides.labelDx ?? 0;
+    const dy = marker.overrides.labelDy ?? (r + fontSize + lo.y);
+    labelX = x + dx;
+    labelY = y + dy;
+    labelAnchor = dx >= 0 ? 'start' : 'end';
+  } else {
+    const nearRight = x > imgWidth * 0.85;
+    labelX = nearRight ? x - r - lo.x : x + r + lo.x;
+    labelAnchor = nearRight ? 'end' : 'start';
+    labelY = y + lo.y;
+  }
+
+  const labelDist = Math.sqrt((labelX - x) ** 2 + (labelY - y) ** 2);
+  const autoShowLeader =
+    (marker.overrides?.labelDx !== undefined || marker.overrides?.labelDy !== undefined) &&
+    labelDist > r + 4;
+  const drawLeaderLine = marker.overrides?.showLeaderLine ?? autoShowLeader;
+  const leaderPt = circleEdgePoint(x, y, r, labelX, labelY);
 
   const highlightColor = selected ? '#facc15' : color;
 
@@ -38,7 +66,7 @@ export function MarkerGroup({ marker, style, imgWidth, selected, onSelect, onDra
   const sharedProps = {
     onMouseDown: onDragStart,
     onClick: onSelect,
-    style: { cursor: selected ? 'move' : 'pointer' },
+    style: { cursor: selected ? 'grab' : 'pointer' } as React.CSSProperties,
   };
 
   let shape: React.ReactNode;
@@ -51,7 +79,6 @@ export function MarkerGroup({ marker, style, imgWidth, selected, onSelect, onDra
         <line x1={x + gap} y1={y} x2={x + r} y2={y} stroke={highlightColor} strokeWidth={sw} />
         <line x1={x} y1={y - r} x2={x} y2={y - gap} stroke={highlightColor} strokeWidth={sw} />
         <line x1={x} y1={y + gap} x2={x} y2={y + r} stroke={highlightColor} strokeWidth={sw} />
-        {/* hit target */}
         <circle cx={x} cy={y} r={r + 4} fill="transparent" />
       </g>
     );
@@ -76,6 +103,17 @@ export function MarkerGroup({ marker, style, imgWidth, selected, onSelect, onDra
   return (
     <g>
       {shape}
+      {drawLeaderLine && style.showLabels && marker.markerStyle !== 'crosshair' && (
+        <line
+          x1={leaderPt.x} y1={leaderPt.y}
+          x2={labelX} y2={labelY}
+          stroke={highlightColor}
+          strokeWidth={sw * 0.5}
+          strokeDasharray="4 3"
+          opacity={0.6}
+          style={{ pointerEvents: 'none' }}
+        />
+      )}
       {style.showLabels && (
         <text
           x={labelX} y={labelY}
@@ -84,7 +122,8 @@ export function MarkerGroup({ marker, style, imgWidth, selected, onSelect, onDra
           textAnchor={labelAnchor}
           dominantBaseline="middle"
           stroke="black" strokeWidth={sw * 0.4} paintOrder="stroke fill"
-          style={{ fontFamily: 'monospace', cursor: 'pointer' }}
+          style={{ fontFamily: 'monospace', cursor: selected ? 'grab' : 'pointer' }}
+          onMouseDown={onLabelDragStart ?? onDragStart}
           onDoubleClick={handleDoubleClick}
           onClick={onSelect}
         >

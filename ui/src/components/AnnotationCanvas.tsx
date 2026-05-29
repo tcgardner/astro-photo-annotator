@@ -29,7 +29,6 @@ export function AnnotationCanvas({ imageSrc, markers, style, wcs, selectedId: co
   const [internalSelectedId, setInternalSelectedId] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingMarker | null>(null);
 
-  // Support both controlled (selectedId prop) and uncontrolled usage
   const selectedId = controlledSelectedId !== undefined ? controlledSelectedId : internalSelectedId;
   function setSelectedId(id: string | null) {
     setInternalSelectedId(id);
@@ -38,18 +37,31 @@ export function AnnotationCanvas({ imageSrc, markers, style, wcs, selectedId: co
 
   const { startDrag, onMouseMove, onMouseUp, isDragging, toSvgCoords } = useDrag(
     svgRef,
-    (id, x, y) => {
-      onChange(markers.map(m => {
-        if (m.id !== id) return m;
-        const updated: Marker = { ...m, x, y };
-        // Back-calculate RA/Dec from new pixel position when WCS is available
-        if (wcs && m.ra !== undefined && m.dec !== undefined) {
-          const { ra, dec } = pixelToRaDec(x, y, wcs);
-          updated.ra = ra;
-          updated.dec = dec;
-        }
-        return updated;
-      }));
+    (id, x, y, mode) => {
+      if (mode === 'marker') {
+        onChange(markers.map(m => {
+          if (m.id !== id) return m;
+          const updated: Marker = { ...m, x, y };
+          if (wcs && m.ra !== undefined && m.dec !== undefined) {
+            const { ra, dec } = pixelToRaDec(x, y, wcs);
+            updated.ra = ra;
+            updated.dec = dec;
+          }
+          return updated;
+        }));
+      } else {
+        onChange(markers.map(m => {
+          if (m.id !== id) return m;
+          return {
+            ...m,
+            overrides: {
+              ...m.overrides,
+              labelDx: x - m.x,
+              labelDy: y - m.y,
+            },
+          };
+        }));
+      }
     },
     () => { /* auto-saved by onChange */ },
   );
@@ -65,8 +77,6 @@ export function AnnotationCanvas({ imageSrc, markers, style, wcs, selectedId: co
     setSelectedId(null);
 
     const { x: svgX, y: svgY } = toSvgCoords(e);
-
-    // Convert to screen coords for popover position
     const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
     const scaleX = rect.width / (imgDims.width || 1);
     const scaleY = rect.height / (imgDims.height || 1);
@@ -74,8 +84,6 @@ export function AnnotationCanvas({ imageSrc, markers, style, wcs, selectedId: co
     setPending({
       svgX: Math.round(svgX),
       svgY: Math.round(svgY),
-      // rect is already in viewport coordinates (from getBoundingClientRect),
-      // so no scrollX/Y adjustment needed here — the popover parent is position:fixed.
       screenX: svgX * scaleX + rect.left,
       screenY: svgY * scaleY + rect.top,
     });
@@ -140,7 +148,8 @@ export function AnnotationCanvas({ imageSrc, markers, style, wcs, selectedId: co
               imgWidth={imgDims.width}
               selected={selectedId === m.id}
               onSelect={e => { e.stopPropagation(); setSelectedId(m.id); }}
-              onDragStart={startDrag(m.id)}
+              onDragStart={startDrag(m.id, 'marker')}
+              onLabelDragStart={startDrag(m.id, 'label')}
               onDelete={() => deleteMarker(m.id)}
               onLabelEdit={label => editLabel(m.id, label)}
             />

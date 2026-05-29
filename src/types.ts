@@ -17,6 +17,9 @@ export interface MarkerStyleOverrides {
   circleRadius?: number;
   fontSize?: number;
   labelOffset?: { x: number; y: number };
+  labelDx?: number;
+  labelDy?: number;
+  showLeaderLine?: boolean;
 }
 
 export interface Marker {
