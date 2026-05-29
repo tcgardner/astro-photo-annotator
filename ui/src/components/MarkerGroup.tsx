@@ -8,6 +8,7 @@ interface Props {
   onSelect: (e: React.MouseEvent) => void;
   onDragStart: (e: React.MouseEvent) => void;
   onLabelDragStart?: (e: React.MouseEvent) => void;
+  onResizeDragStart?: (e: React.MouseEvent) => void;
   onDelete: () => void;
   onLabelEdit: (label: string) => void;
 }
@@ -20,7 +21,7 @@ function circleEdgePoint(cx: number, cy: number, r: number, labelX: number, labe
   return { x: cx + (dx / dist) * r, y: cy + (dy / dist) * r };
 }
 
-export function MarkerGroup({ marker, style, imgWidth, selected, onSelect, onDragStart, onLabelDragStart, onDelete, onLabelEdit }: Props) {
+export function MarkerGroup({ marker, style, imgWidth, selected, onSelect, onDragStart, onLabelDragStart, onResizeDragStart, onDelete, onLabelEdit }: Props) {
   if (!marker.visible) return null;
   if (style.catalogs.length > 0 && !style.catalogs.includes(marker.catalog)) return null;
 
@@ -92,11 +93,10 @@ export function MarkerGroup({ marker, style, imgWidth, selected, onSelect, onDra
     );
   } else {
     shape = (
-      <circle
-        cx={x} cy={y} r={r}
-        fill="none" stroke={highlightColor} strokeWidth={sw}
-        {...sharedProps}
-      />
+      <g {...sharedProps}>
+        <circle cx={x} cy={y} r={r} fill="none" stroke={highlightColor} strokeWidth={sw} />
+        <circle cx={x} cy={y} r={r} fill="transparent" />
+      </g>
     );
   }
 
@@ -138,6 +138,19 @@ export function MarkerGroup({ marker, style, imgWidth, selected, onSelect, onDra
           <circle cx={x + r + 6} cy={y - r - 6} r={6} fill="#ef4444" />
           <text x={x + r + 6} y={y - r - 6} textAnchor="middle" dominantBaseline="middle" fontSize={9} fill="white">X</text>
         </g>
+      )}
+      {selected && marker.markerStyle !== 'dot' && onResizeDragStart && (
+        <circle
+          cx={x + r}
+          cy={y}
+          r={6}
+          fill="#60a5fa"
+          stroke="white"
+          strokeWidth={1}
+          style={{ cursor: 'ew-resize' }}
+          onMouseDown={e => { e.stopPropagation(); onResizeDragStart(e); }}
+          onClick={e => e.stopPropagation()}
+        />
       )}
     </g>
   );

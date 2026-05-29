@@ -81,21 +81,21 @@ export function StylePanel({ style, isOverride, onChange, onResetToDefault }: Pr
       {/* Sliders */}
       <label className="block">
         <span className="text-gray-400">Radius: {style.circleRadius}px</span>
-        <input type="range" min={4} max={100} value={style.circleRadius}
+        <input type="range" min={4} max={250} value={style.circleRadius}
           onChange={e => patch({ circleRadius: parseInt(e.target.value, 10) })}
           className="w-full accent-indigo-500 mt-1" />
       </label>
 
       <label className="block">
         <span className="text-gray-400">Stroke: {style.strokeWidth}px</span>
-        <input type="range" min={1} max={6} value={style.strokeWidth}
+        <input type="range" min={1} max={12} value={style.strokeWidth}
           onChange={e => patch({ strokeWidth: parseInt(e.target.value, 10) })}
           className="w-full accent-indigo-500 mt-1" />
       </label>
 
       <label className="block">
         <span className="text-gray-400">Font: {style.fontSize}px</span>
-        <input type="range" min={6} max={48} value={style.fontSize}
+        <input type="range" min={6} max={72} value={style.fontSize}
           onChange={e => patch({ fontSize: parseInt(e.target.value, 10) })}
           className="w-full accent-indigo-500 mt-1" />
       </label>

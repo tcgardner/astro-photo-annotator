@@ -9,6 +9,7 @@ import {
   updateAnnotationCatalogId,
   getDefaultStyle,
 } from '../db.js';
+import sharp from 'sharp';
 import { exportAnnotatedImage, uploadToAstroDB } from '../lib/sharp-export.js';
 import type { Marker, StyleConfig } from '../types.js';
 
@@ -88,7 +89,6 @@ annotationsRouter.post('/:id/export', async (req, res) => {
 
   const ann = getAnnotationById(id);
   if (!ann) { res.status(404).json({ error: 'Not found' }); return; }
-  if (!ann.wcs) { res.status(400).json({ error: 'Image not plate-solved yet' }); return; }
 
   const style = resolveStyle(ann.styleOverride);
   const catalogId = (ann.catalogId ?? 'unknown').replace(/\s+/g, '');
@@ -106,7 +106,19 @@ annotationsRouter.post('/:id/export', async (req, res) => {
   const annotatedFilename = `${catalogId}_annotated${ext}`;
   const originalFilename = `${catalogId}${ext}`;
 
-  const buffer = await exportAnnotatedImage(imageBuffer, outputFormat, ann.markers, style, ann.wcs);
+  // Use WCS dimensions when available (they match the solved image), otherwise read from sharp
+  let svgWidth: number;
+  let svgHeight: number;
+  if (ann.wcs) {
+    svgWidth = ann.wcs.width;
+    svgHeight = ann.wcs.height;
+  } else {
+    const meta = await sharp(imageBuffer).metadata();
+    svgWidth = meta.width ?? 0;
+    svgHeight = meta.height ?? 0;
+  }
+
+  const buffer = await exportAnnotatedImage(imageBuffer, outputFormat, ann.markers, style, svgWidth, svgHeight);
   const result = await uploadToAstroDB(buffer, annotatedFilename, originalFilename, catalogId, null, ASTRO_DB_URL);
 
   res.json({ astroDbImageId: result.id, fileUrl: `${ASTRO_DB_URL}${result.fileUrl}` });

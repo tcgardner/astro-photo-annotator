@@ -49,6 +49,16 @@ export function AnnotationCanvas({ imageSrc, markers, style, wcs, selectedId: co
           }
           return updated;
         }));
+      } else if (mode === 'resize') {
+        onChange(markers.map(m => {
+          if (m.id !== id) return m;
+          const dist = Math.round(Math.sqrt((x - m.x) ** 2 + (y - m.y) ** 2));
+          const newR = Math.max(10, dist);
+          return {
+            ...m,
+            overrides: { ...m.overrides, circleRadius: newR },
+          };
+        }));
       } else {
         onChange(markers.map(m => {
           if (m.id !== id) return m;
@@ -73,6 +83,7 @@ export function AnnotationCanvas({ imageSrc, markers, style, wcs, selectedId: co
 
   function handleSvgClick(e: React.MouseEvent<SVGSVGElement>) {
     if (isDragging()) return;
+    if (e.target !== e.currentTarget) return; // click landed on a child element, not the SVG background
     if (pending) { setPending(null); return; }
     setSelectedId(null);
 
@@ -150,6 +161,7 @@ export function AnnotationCanvas({ imageSrc, markers, style, wcs, selectedId: co
               onSelect={e => { e.stopPropagation(); setSelectedId(m.id); }}
               onDragStart={startDrag(m.id, 'marker')}
               onLabelDragStart={startDrag(m.id, 'label')}
+              onResizeDragStart={startDrag(m.id, 'resize')}
               onDelete={() => deleteMarker(m.id)}
               onLabelEdit={label => editLabel(m.id, label)}
             />

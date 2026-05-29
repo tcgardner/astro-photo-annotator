@@ -133,13 +133,13 @@ export function EditorPage() {
         <div className="flex-shrink-0 px-3 py-3">
           <button
             onClick={exportImage}
-            disabled={!annotation || solveStatus !== 'solved' || loading}
+            disabled={!imageId || markers.length === 0 || loading}
             className="w-full py-2 bg-green-700 hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm rounded"
           >
             Export to astro-db
           </button>
-          {solveStatus !== 'solved' && (
-            <div className="text-xs text-gray-600 mt-1 text-center">Plate solve first to export</div>
+          {markers.length === 0 && (
+            <div className="text-xs text-gray-600 mt-1 text-center">Add markers to enable export</div>
           )}
           {exportResult && (
             <div className="mt-2 text-xs text-green-400">

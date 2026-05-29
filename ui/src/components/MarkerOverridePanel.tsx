@@ -26,7 +26,7 @@ export function MarkerOverridePanel({ marker, globalStyle, onChange, onClear }: 
           {ov.circleRadius === undefined && <span className="text-gray-600 ml-1">(global)</span>}
         </span>
         <input
-          type="range" min={4} max={100}
+          type="range" min={4} max={250}
           value={ov.circleRadius ?? globalStyle.circleRadius}
           onChange={e => patch({ circleRadius: parseInt(e.target.value, 10) })}
           className="w-full accent-indigo-500 mt-1"
@@ -39,7 +39,7 @@ export function MarkerOverridePanel({ marker, globalStyle, onChange, onClear }: 
           {ov.fontSize === undefined && <span className="text-gray-600 ml-1">(global)</span>}
         </span>
         <input
-          type="range" min={6} max={48}
+          type="range" min={6} max={72}
           value={ov.fontSize ?? globalStyle.fontSize}
           onChange={e => patch({ fontSize: parseInt(e.target.value, 10) })}
           className="w-full accent-indigo-500 mt-1"

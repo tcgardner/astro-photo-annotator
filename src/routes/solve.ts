@@ -8,7 +8,7 @@ import {
   getCalibration,
 } from '../lib/astrometry.js';
 import { querySimbadAll } from '../lib/simbad.js';
-import { resetWcsLogCounter } from '../lib/wcs.js';
+import { resetWcsLogCounter, raDecToPixel } from '../lib/wcs.js';
 import {
   upsertAnnotationPath,
   updateAnnotationSolve,
@@ -98,6 +98,29 @@ async function runPipeline(
   updateAnnotationSolve(annId, { solveStatus: 'solved', wcs, markers, catalogId: primaryLabel });
   console.log('[solve] ' + image.filename + ' solved, ' + markers.length + ' objects');
 }
+
+// GET /api/solve/:id/debug -- inspect raw WCS and recomputed pixel coords for first 5 markers
+solveRouter.get('/:id/debug', (req, res) => {
+  const id = parseInt(req.params['id'], 10);
+  if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+
+  const ann = getAnnotationById(id);
+  if (!ann) { res.status(404).json({ error: 'Not found' }); return; }
+  if (!ann.wcs) { res.status(400).json({ error: 'Not solved' }); return; }
+
+  const sampleMarkers = ann.markers.slice(0, 5).map(m => ({
+    label: m.label,
+    ra: m.ra,
+    dec: m.dec,
+    storedX: m.x,
+    storedY: m.y,
+    computedPixel: (m.ra !== undefined && m.dec !== undefined)
+      ? raDecToPixel(m.ra, m.dec, ann.wcs!)
+      : null,
+  }));
+
+  res.json({ wcs: ann.wcs, sampleMarkers });
+});
 
 // GET /api/solve/:id/status -- poll solve status from DB
 solveRouter.get('/:id/status', (req, res) => {

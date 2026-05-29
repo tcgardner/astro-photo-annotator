@@ -445,6 +445,292 @@ DB_PATH=./annotator.db
 
 ---
 
+## UI Improvement Plan — 2026-05-29
+
+Five issues diagnosed from reading `EditorPage.tsx`, `BrowserPage.tsx`, `StylePanel.tsx`, `MarkerOverridePanel.tsx`, and `ObjectList.tsx`.
+
+---
+
+### Issue 1 — Slider upper limits too small
+
+**Problem:** The circle-radius slider is capped at 100px and the font-size slider at 48px. For larger images these limits are hit immediately.
+
+**Files:** `ui/src/components/StylePanel.tsx`, `ui/src/components/MarkerOverridePanel.tsx`
+
+**Changes:**
+
+In `StylePanel.tsx`:
+- Line 84: `<input type="range" min={4} max={100}` → change `max={100}` to `max={250}`
+- Line 98: `<input type="range" min={6} max={48}` → change `max={48}` to `max={72}`
+
+In `MarkerOverridePanel.tsx`:
+- Line 29: `<input type="range" min={4} max={100}` → change `max={100}` to `max={250}`
+- Line 42: `<input type="range" min={6} max={48}` → change `max={48}` to `max={72}`
+
+No other files change. The `StyleConfig` type already stores these as plain numbers so there is no type constraint to update.
+
+---
+
+### Issue 2 — Editor sidebar overflows and clips content at the bottom
+
+**Diagnosis:** The sidebar `div` at `EditorPage.tsx:70` uses `w-64 flex flex-col bg-gray-900 border-l border-gray-800 overflow-hidden`. Its parent is `flex h-[calc(100vh-3.5rem)] overflow-hidden`. Inside the sidebar, these children are `flex-shrink-0`:
+- header (Back + image id + catalogId input)
+- PlateSolveButton row
+- marker count row
+- MarkerOverridePanel (conditionally rendered, also `flex-shrink-0`)
+- StylePanel
+- Export button
+
+Only the `ObjectList` wrapper (`flex-1 min-h-0 overflow-y-auto`) can scroll. When a marker is selected, the MarkerOverridePanel, StylePanel, and Export button are all `flex-shrink-0` but their combined height can exceed the viewport, and because the sidebar itself is `overflow-hidden`, the export button and the bottom of StylePanel are clipped with no way to reach them.
+
+**Fix:** Wrap everything below the fixed top rows (i.e. below the marker-count row) in a single `overflow-y-auto` scroll region instead of using multiple `flex-shrink-0` blocks.
+
+**Changes in `EditorPage.tsx`:**
+
+Replace the current sidebar structure:
+```
+<div className="w-64 flex flex-col bg-gray-900 border-l border-gray-800 overflow-hidden">
+  {/* header row — flex-shrink-0 */}
+  {/* PlateSolve row — flex-shrink-0 */}
+  {/* marker count row — flex-shrink-0 */}
+  {/* ObjectList — flex-1 min-h-0 overflow-y-auto */}
+  {/* MarkerOverridePanel — flex-shrink-0 */}
+  {/* StylePanel — flex-shrink-0 */}
+  {/* Export — flex-shrink-0 */}
+</div>
+```
+
+With this structure:
+```
+<div className="w-64 flex flex-col bg-gray-900 border-l border-gray-800 overflow-hidden">
+  {/* fixed top: header, PlateSolve, marker count — these stay flex-shrink-0 */}
+  <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+    {/* ObjectList: flex-shrink-0 with a max-h, or just natural height */}
+    {/* MarkerOverridePanel */}
+    {/* StylePanel */}
+    {/* Export button */}
+  </div>
+</div>
+```
+
+Specifically: remove `flex-1 min-h-0 overflow-y-auto` from the ObjectList wrapper, remove `flex-shrink-0` from the MarkerOverridePanel/StylePanel/Export wrappers, and instead wrap all of them (ObjectList through Export) in a single `<div className="flex-1 min-h-0 overflow-y-auto">`. The ObjectList inner `div` already has `overflow-y-auto flex-1` on it; inside the new scroll wrapper it should instead be `className="max-h-48 overflow-y-auto flex-shrink-0"` so it doesn't consume all the scroll space — or leave the ObjectList at natural height (no `flex-1`) so all panels scroll together.
+
+The simplest approach: give ObjectList a fixed `max-h-48 overflow-y-auto` so it occupies at most 12rem, then everything else flows naturally inside the outer scroll container.
+
+---
+
+### Issue 3 — Resizable sidebar panel
+
+**File:** `ui/src/pages/EditorPage.tsx`
+
+**Design:** A draggable handle on the left edge of the sidebar lets the user resize it. Width is persisted to `localStorage`.
+
+**Implementation steps:**
+
+1. Add state at the top of `EditorPage`:
+   ```ts
+   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+     const saved = localStorage.getItem('annotator-sidebar-width');
+     return saved ? parseInt(saved, 10) : 256; // 256 = w-64 default
+   });
+   ```
+
+2. Add a `useRef` for the drag-in-progress flag:
+   ```ts
+   const dragging = useRef(false);
+   ```
+
+3. Attach handlers to the sidebar wrapper — replace the static `w-64` class with inline style:
+   ```tsx
+   <div
+     style={{ width: sidebarWidth }}
+     className="flex flex-col bg-gray-900 border-l border-gray-800 overflow-hidden relative"
+   >
+   ```
+
+4. Add a drag handle `div` as the first child of the sidebar:
+   ```tsx
+   <div
+     className="absolute left-0 top-0 h-full w-1 cursor-col-resize hover:bg-indigo-500/40 z-10"
+     onMouseDown={e => {
+       e.preventDefault();
+       dragging.current = true;
+       const startX = e.clientX;
+       const startW = sidebarWidth;
+       const onMove = (ev: MouseEvent) => {
+         if (!dragging.current) return;
+         const delta = startX - ev.clientX; // drag left = wider
+         const next = Math.min(600, Math.max(280, startW + delta));
+         setSidebarWidth(next);
+       };
+       const onUp = () => {
+         dragging.current = false;
+         document.removeEventListener('mousemove', onMove);
+         document.removeEventListener('mouseup', onUp);
+         localStorage.setItem('annotator-sidebar-width', String(sidebarWidth));
+       };
+       document.addEventListener('mousemove', onMove);
+       document.addEventListener('mouseup', onUp);
+     }}
+   />
+   ```
+
+5. The `localStorage.setItem` in `onUp` captures a stale closure; fix by storing width in a ref alongside state, or by using a `useEffect` that watches `sidebarWidth`:
+   ```ts
+   useEffect(() => {
+     localStorage.setItem('annotator-sidebar-width', String(sidebarWidth));
+   }, [sidebarWidth]);
+   ```
+   Remove the inline `localStorage.setItem` from `onUp`.
+
+**Width clamp:** min 280px, max 600px.
+
+---
+
+### Issue 4 — Tabbed sidebar
+
+**File:** `ui/src/pages/EditorPage.tsx`
+
+**Design:** Replace the stacked panels with two tabs. Tab state lives in React (not URL) so switching tabs is instant and loses no form state.
+
+**Tabs:**
+- **"Markers"** tab: ObjectList (with its `max-h` scroll, from Issue 2) + MarkerOverridePanel (shown only when a marker is selected, same as now)
+- **"Style"** tab: StylePanel + Export button
+
+**Implementation:**
+
+1. Add tab state:
+   ```ts
+   const [activeTab, setActiveTab] = useState<'markers' | 'style'>('markers');
+   ```
+
+2. Inside the sidebar, after the fixed top rows (header, PlateSolve, marker count), add a tab bar before the scroll region:
+   ```tsx
+   <div className="flex flex-shrink-0 border-b border-gray-800">
+     {(['markers', 'style'] as const).map(tab => (
+       <button
+         key={tab}
+         onClick={() => setActiveTab(tab)}
+         className={`flex-1 py-1.5 text-xs capitalize border-b-2 transition-colors ${
+           activeTab === tab
+             ? 'border-indigo-500 text-white'
+             : 'border-transparent text-gray-500 hover:text-gray-300'
+         }`}
+       >
+         {tab}
+       </button>
+     ))}
+   </div>
+   ```
+
+3. The scroll region (from Issue 2) conditionally renders based on `activeTab`:
+   ```tsx
+   <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-3">
+     {activeTab === 'markers' && (
+       <>
+         <div className="max-h-48 overflow-y-auto border border-gray-800 rounded">
+           <ObjectList markers={markers} style={style} onChange={updateMarkers} />
+         </div>
+         {selectedMarker && (
+           <>
+             <div className="text-xs text-gray-500 uppercase tracking-wider">
+               Marker: {selectedMarker.label}
+             </div>
+             <MarkerOverridePanel ... />
+           </>
+         )}
+       </>
+     )}
+     {activeTab === 'style' && (
+       <>
+         <StylePanel ... />
+         <button onClick={exportImage} ...>Export to astro-db</button>
+         {/* export result link */}
+       </>
+     )}
+   </div>
+   ```
+
+4. The fixed header rows (Back, image id, catalogId input, PlateSolveButton, marker count) remain `flex-shrink-0` above the tab bar — they are always visible regardless of active tab.
+
+5. Move the Export `div` (currently at lines 133–152) inside the `activeTab === 'style'` branch. Remove the outer `flex-shrink-0 px-3 py-3` wrappers for StylePanel and Export since they now live inside the scrollable region.
+
+**State preservation:** Both tab contents are rendered with CSS `display: none` / `display: block` rather than conditional mounting if preserving unsaved slider state matters. However since all slider values are in the `style` object passed as props (lifted state in `useAnnotation`), unmounting and remounting the panels is safe — no local slider state is lost.
+
+---
+
+### Issue 5 — Browser page: more images, smaller tiles, scrolling
+
+**File:** `ui/src/pages/BrowserPage.tsx`
+
+**Diagnosis:** The outer `div` at line 35 is `className="p-4"` with no height constraint and no overflow setting. The page is rendered inside the app shell, which presumably has `h-screen` or similar on its outer container. Since `BrowserPage` itself doesn't set `h-full overflow-y-auto`, the grid overflows the shell and the shell clips it. Additionally, the image thumbnails use `w-full aspect-square object-cover` — in a 5-column grid on a 1280px viewport that's roughly 230×230px per tile, which is quite large.
+
+**Changes in `BrowserPage.tsx`:**
+
+1. Replace the outer `div className="p-4"` with a flex-column layout that fills the available viewport:
+   ```tsx
+   <div className="flex flex-col h-full overflow-hidden">
+     {/* fixed header */}
+     <div className="flex-shrink-0 px-4 pt-4 pb-2">
+       <div className="text-xs text-gray-500 uppercase tracking-wider">astro-db images</div>
+       {loading && <div className="text-gray-500 text-sm mt-2">Loading…</div>}
+       {error && <div className="text-red-400 text-sm mt-2">{error}</div>}
+     </div>
+     {/* scrollable grid */}
+     <div className="flex-1 min-h-0 overflow-y-auto px-4 pb-4">
+       {/* grid here */}
+     </div>
+   </div>
+   ```
+   `h-full` works because the app shell gives the page container full remaining height below the nav bar (the same `h-[calc(100vh-3.5rem)]` approach used in `EditorPage.tsx`). Confirm the shell applies this — if not, use `h-[calc(100vh-3.5rem)]` directly on the outer div.
+
+2. Change the grid to show more columns and smaller tiles. Replace:
+   ```tsx
+   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+   ```
+   with:
+   ```tsx
+   <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2">
+   ```
+
+3. Shrink the thumbnail. Replace:
+   ```tsx
+   <img ... className="w-full aspect-square object-cover opacity-80 group-hover:opacity-100" />
+   ```
+   with a fixed-size thumbnail:
+   ```tsx
+   <img
+     src={img.url}
+     alt={img.filename}
+     className="w-full object-cover opacity-80 group-hover:opacity-100"
+     style={{ height: '90px' }}
+     loading="lazy"
+   />
+   ```
+   The tile card itself gets a fixed width from the grid column; height comes from the image + label below.
+
+4. Slim down the label area. Replace the current `<div className="p-1.5">` block with:
+   ```tsx
+   <div className="px-1 py-0.5">
+     <div className="text-xs text-white truncate leading-tight">{img.catalog_id}</div>
+     {img.hasAnnotations && (
+       <div className="text-xs text-green-400 leading-tight">✓</div>
+     )}
+   </div>
+   ```
+   Drop `img.filename` from the tile (too long to read at small size; visible on hover or in the editor). Keep the "Annotated ✓" badge but as just `✓` without the word "Annotated".
+
+**Summary of BrowserPage layout changes:**
+
+| Element | Before | After |
+|---------|--------|-------|
+| Outer container | `p-4` (no scroll, no height) | `flex flex-col h-full overflow-hidden` |
+| Grid container | `grid-cols-2…lg:grid-cols-5 gap-3` in a non-scrolling div | Inside `flex-1 min-h-0 overflow-y-auto`, `grid-cols-3…xl:grid-cols-10 gap-2` |
+| Thumbnail | `w-full aspect-square` (~230px square) | `w-full h-[90px] object-cover` |
+| Label | catalog_id + filename + "Annotated ✓" in `p-1.5` | catalog_id + "✓" in `px-1 py-0.5`, no filename |
+
+---
+
 ## Fix Plan: Issue 2 — Plate Solve Annotations Clustered at Center
 
 ### Problem
@@ -601,6 +887,304 @@ const wcs = await getCalibration(jobId, imgW, imgH);
 console.log('[solve] WCS calibration:', JSON.stringify(wcs));
 ```
 This surfaces the raw values from Astrometry.net so we can confirm `pixscale` unit, `parity`, and `radius` before SIMBAD is queried.
+
+---
+
+## Bug-fix batch — 2026-05-29
+
+Five issues identified from code review. None implemented yet.
+
+---
+
+### Issue 1 — Per-marker circle resize via drag handle
+
+**Root cause / current state:**  
+`MarkerStyleOverrides.circleRadius` exists and is wired to a slider in `MarkerOverridePanel`, but there is no on-canvas way to resize a circle. `useDrag.ts` only supports `DragMode = 'marker' | 'label'`.
+
+**Plan:**
+
+**`ui/src/hooks/useDrag.ts`**  
+Add `'resize'` to the union type:
+```typescript
+export type DragMode = 'marker' | 'label' | 'resize';
+```
+No other change needed in `useDrag` — the `onMove` callback already receives `(id, x, y, mode)` and the caller can dispatch on mode.
+
+**`ui/src/components/MarkerGroup.tsx`**  
+Add a new prop:
+```typescript
+onResizeDragStart?: (e: React.MouseEvent) => void;
+```
+When `selected === true` and `marker.markerStyle !== 'dot'`, render a drag handle at `(x + r, y)`:
+```jsx
+{selected && marker.markerStyle !== 'dot' && onResizeDragStart && (
+  <circle
+    cx={x + r}
+    cy={y}
+    r={6}
+    fill="#60a5fa"
+    stroke="white"
+    strokeWidth={1}
+    style={{ cursor: 'ew-resize' }}
+    onMouseDown={e => { e.stopPropagation(); onResizeDragStart(e); }}
+    onClick={e => e.stopPropagation()}
+  />
+)}
+```
+Place this inside the outer `<g>`, after the shape and before the delete button. The `onClick` stopper prevents the resize handle from triggering the canvas add-annotation flow.
+
+**`ui/src/components/AnnotationCanvas.tsx`**  
+Pass `onResizeDragStart={startDrag(m.id, 'resize')}` to each `<MarkerGroup>`.
+
+In the `useDrag` `onMove` callback (the second argument to `useDrag`), add a `'resize'` branch:
+```typescript
+} else if (mode === 'resize') {
+  onChange(markers.map(m => {
+    if (m.id !== id) return m;
+    const dist = Math.round(Math.sqrt((x - m.x) ** 2 + (y - m.y) ** 2));
+    const newR = Math.max(10, dist);
+    return {
+      ...m,
+      overrides: { ...m.overrides, circleRadius: newR },
+    };
+  }));
+}
+```
+The `x, y` values passed to `onMove` are already in SVG coordinate space (via `toSvgCoords`), so `dist` is in image pixels — the same unit `circleRadius` uses.
+
+---
+
+### Issue 2 — Export button disabled without plate solve
+
+**Root cause:**  
+`EditorPage.tsx` line 217:
+```typescript
+disabled={!annotation || solveStatus !== 'solved' || loading}
+```
+This requires a completed plate solve. The helper text on line 222 reinforces this: "Plate solve first to export". But markers have `x, y` coordinates and can be manually placed; a WCS solve is not needed to composite them onto the image. The server-side export handler in `src/routes/annotations.ts` line 91 also hard-blocks:
+```typescript
+if (!ann.wcs) { res.status(400).json({ error: 'Image not plate-solved yet' }); return; }
+```
+And `sharp-export.ts`'s `buildSvg` takes `wcs: WCS` and uses it only for `const { width, height } = wcs`.
+
+**Plan:**
+
+**`ui/src/pages/EditorPage.tsx`**  
+Change the button's `disabled` condition:
+```typescript
+disabled={!imageId || markers.length === 0 || loading}
+```
+Change the helper text:
+```tsx
+{markers.length === 0 && (
+  <div className="text-xs text-gray-600 mt-1 text-center">Add markers to enable export</div>
+)}
+```
+
+**`src/routes/annotations.ts`**  
+Remove the hard WCS guard. Instead, fetch the image to get its natural dimensions when WCS is null:
+```typescript
+// Remove: if (!ann.wcs) { res.status(400)... }
+
+// Get image dimensions for the SVG when there is no WCS
+let svgWidth: number;
+let svgHeight: number;
+if (ann.wcs) {
+  svgWidth = ann.wcs.width;
+  svgHeight = ann.wcs.height;
+} else {
+  const meta = await sharp(imageBuffer).metadata();
+  svgWidth = meta.width ?? 0;
+  svgHeight = meta.height ?? 0;
+}
+```
+Pass `svgWidth, svgHeight` to `exportAnnotatedImage` instead of `ann.wcs`.
+
+**`src/lib/sharp-export.ts`**  
+Change the signature of `buildSvg` and `exportAnnotatedImage` to accept dimensions directly instead of a full `WCS`:
+```typescript
+// buildSvg(markers, style, wcs: WCS) → buildSvg(markers, style, width: number, height: number)
+function buildSvg(markers: Marker[], style: StyleConfig, width: number, height: number): string
+
+// exportAnnotatedImage(..., wcs: WCS) → (..., width: number, height: number)
+export async function exportAnnotatedImage(
+  imageData: Buffer,
+  outputFormat: 'jpeg' | 'png',
+  markers: Marker[],
+  style: StyleConfig,
+  width: number,
+  height: number,
+): Promise<Buffer>
+```
+All existing call sites pass `wcs.width` / `wcs.height` — update them to pass the separate numbers. The `WCS` type no longer needs to be imported into `sharp-export.ts`.
+
+---
+
+### Issue 3 — Annotation centering accuracy (WCS debug endpoint)
+
+**Root cause analysis:**
+
+From reading `src/lib/wcs.ts`:
+
+1. **Degrees vs radians** — `orientation` is correctly converted to radians (`wcs.orientation * Math.PI / 180`) before being passed to `Math.sin/cos`. ✓
+
+2. **RA wrap-around** — `dRa` is normalised via `((rawDRa + 540) % 360 - 180)` before `Math.cos` scaling. ✓
+
+3. **Display scaling** — The SVG has `viewBox="0 0 {imgDims.width} {imgDims.height}"` and is placed as `position: absolute; inset: 0; width: 100%; height: 100%`. SVG's own coordinate system is always in natural image pixels regardless of how the browser scales the element. Marker pixel coordinates from `raDecToPixel` are in that same space. **No scaling issue in canvas rendering.** ✓
+
+4. **WCS width/height vs actual image** — `raDecToPixel` uses `wcs.width/wcs.height` to compute the image center (`imgCx, imgCy`) and to bound-check results. These values come from `getCalibration(jobId, imgW, imgH)` in `solve.ts`, which passes `sharp` metadata dimensions. If `sharp` returns a different size than the actual display image (e.g. for RAW files or EXIF rotation), the center would be wrong. **Possible issue.**
+
+5. **Projection formula** — The current implementation is a simplified polar gnomonic, not a full TAN projection. It uses `atan2(dRa, dDec)` to get the angle from north, then projects radially. For objects near the field center (< 1°) this is accurate. For wide-field images or objects at the edges of the calibration radius, errors accumulate. **Known limitation, not a blocking bug.**
+
+**Plan:**
+
+**`src/routes/solve.ts`** — add a debug endpoint:
+```typescript
+// GET /api/solve/:jobId/debug
+solveRouter.get('/:id/debug', (req, res) => {
+  const id = parseInt(req.params['id'], 10);
+  if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+
+  const ann = getAnnotationById(id);
+  if (!ann) { res.status(404).json({ error: 'Not found' }); return; }
+  if (!ann.wcs) { res.status(400).json({ error: 'Not solved' }); return; }
+
+  const first5 = ann.markers.slice(0, 5).map(m => ({
+    label: m.label,
+    ra: m.ra,
+    dec: m.dec,
+    x: m.x,
+    y: m.y,
+    computedPixel: (m.ra !== undefined && m.dec !== undefined)
+      ? raDecToPixel(m.ra, m.dec, ann.wcs!)
+      : null,
+  }));
+
+  res.json({ wcs: ann.wcs, sampleMarkers: first5 });
+});
+```
+Add `import { raDecToPixel } from '../lib/wcs.js'` at the top. The `computedPixel` field re-runs the projection so we can compare the stored `x, y` against what the current code would produce (catches regressions after formula changes).
+
+**`src/lib/wcs.ts`** — investigate `imgCx/imgCy` calculation:  
+Add an explicit comment and check: if `wcs.width === 0 || wcs.height === 0`, log a warning. The issue may be that `getCalibration` returns `width/height` from Astrometry.net's own field estimate rather than from `sharp` metadata. Verify in `src/lib/astrometry.ts` that the `width` and `height` fields in the returned calibration object are being overridden with the `imgW/imgH` parameters passed to `getCalibration`.
+
+**`src/lib/astrometry.ts`** — check `getCalibration` signature:  
+```typescript
+export async function getCalibration(jobId: number, imgW: number, imgH: number): Promise<WCS>
+```
+Confirm that the returned `WCS` object sets `width: imgW, height: imgH` (from the `sharp` metadata), not from Astrometry.net's calibration response. If it uses Astrometry.net's values, replace with the passed-in dimensions — Astrometry.net sometimes returns slightly rounded values.
+
+---
+
+### Issue 4 — Stroke width default too thin
+
+**Root cause:**  
+`dense` preset has `strokeWidth: 1`. All other presets have `strokeWidth: 2`. On high-resolution astrophotos these are barely visible. The `StylePanel.tsx` slider maxes at `6`, which is also too low.
+
+**Plan:**
+
+**`src/presets.ts`** and **`ui/src/presets.ts`** (both files need the same change):  
+Change every preset's `strokeWidth` from its current value to `4`:
+```typescript
+// dense:      strokeWidth: 1  →  strokeWidth: 4
+// minimal:    strokeWidth: 2  →  strokeWidth: 4
+// circles:    strokeWidth: 2  →  strokeWidth: 4
+// crosshairs: strokeWidth: 2  →  strokeWidth: 4
+```
+
+**`ui/src/components/StylePanel.tsx`** line 92 — raise the stroke slider max:
+```tsx
+<input type="range" min={1} max={12} value={style.strokeWidth}
+```
+
+**`ui/src/components/MarkerOverridePanel.tsx`** — there is currently no stroke width control in the per-marker override panel. This is acceptable; stroke width is a global style concern. No change needed here.
+
+---
+
+### Issue 5 — Add-annotation dialog fires on existing marker clicks and after drags
+
+**Root causes (two separate bugs):**
+
+**Bug A — Post-drag click opens the dialog:**  
+In `useDrag.ts`, `onMouseUp` sets `draggingRef.current = null`. By the time the browser fires the `click` event (which always follows a `mouseup` on the same element), `isDragging()` returns `false`. `handleSvgClick` in `AnnotationCanvas.tsx` checks `isDragging()` at line 75 and gets `false`, so it proceeds to `setPending(...)`.
+
+This happens specifically when you drag a marker — the `mouseup` lands on the SVG background (not on the marker, since the marker moved), so the marker's `onClick`/`stopPropagation()` never fires. The SVG receives both `mouseup` and then `click`, and the drag state is already cleared.
+
+**Bug B — Click landing in the "hollow" of a circle hits the SVG:**  
+Circle markers are rendered as `fill="none"` strokes. Clicking inside the circle but not on the thin stroke line hits the SVG background, not the circle element. The transparent hit-test `<circle>` in the crosshair branch (`r={r + 4} fill="transparent"`) doesn't have a click handler, so it also falls through. This means clicking anywhere near (but not on) a marker's stroke opens the add dialog.
+
+**Plan:**
+
+**`ui/src/hooks/useDrag.ts`** — track actual drag movement:
+```typescript
+const draggingRef = useRef<{ id: string; mode: DragMode } | null>(null);
+const movedRef = useRef(false);       // true if pointer moved since mousedown
+const justDraggedRef = useRef(false); // stays true through the click event after mouseup
+
+function startDrag(id: string, mode: DragMode = 'marker') {
+  return (e: React.MouseEvent) => {
+    e.stopPropagation();
+    draggingRef.current = { id, mode };
+    movedRef.current = false;
+  };
+}
+
+function onMouseMove(e: React.MouseEvent) {
+  if (!draggingRef.current) return;
+  e.preventDefault();
+  movedRef.current = true;
+  const { x, y } = toSvgCoords(e);
+  onMove(draggingRef.current.id, Math.round(x), Math.round(y), draggingRef.current.mode);
+}
+
+function onMouseUp() {
+  if (draggingRef.current) {
+    if (movedRef.current) justDraggedRef.current = true;
+    draggingRef.current = null;
+    movedRef.current = false;
+    onEnd();
+  }
+}
+
+// Updated isDragging: also returns true in the brief window after a drag ends
+const isDragging = () => {
+  if (draggingRef.current !== null) return true;
+  if (justDraggedRef.current) {
+    justDraggedRef.current = false; // consume the flag
+    return true;
+  }
+  return false;
+};
+```
+`justDraggedRef` is set in `onMouseUp` when movement occurred, and consumed (cleared + returns true) in the very next `isDragging()` call, which is the post-drag `click` → `handleSvgClick`. This prevents the false add-annotation trigger after every drag.
+
+**`ui/src/components/MarkerGroup.tsx`** — add transparent hit-test areas to all marker shapes:
+
+For the `circle` variant, replace the bare `<circle fill="none">` with a `<g>` that includes a transparent filled hit-test circle:
+```jsx
+shape = (
+  <g {...sharedProps}>
+    <circle cx={x} cy={y} r={r} fill="none" stroke={highlightColor} strokeWidth={sw} />
+    <circle cx={x} cy={y} r={r} fill="transparent" />
+  </g>
+);
+```
+The transparent `fill="transparent"` circle receives pointer events (SVG default is `pointer-events: visiblePainted`, but `fill="transparent"` counts as painted). This makes the entire circular area — not just the stroke — respond to clicks and drag starts. The `onMouseDown`/`onClick` bubble up to the `<g>` via `sharedProps`.
+
+For the `crosshair` variant, the existing transparent `<circle cx={x} cy={y} r={r + 4} fill="transparent" />` already provides a hit area, but it has no event handler — it's a child of the `<g {...sharedProps}>` so events on it DO bubble up to the `<g>`. No change needed here.
+
+For the `dot` variant, the dot is already a solid filled circle so it receives all pointer events. No change needed.
+
+**`ui/src/components/AnnotationCanvas.tsx`** — add a `e.target === e.currentTarget` guard as a secondary safety net:
+```typescript
+function handleSvgClick(e: React.MouseEvent<SVGSVGElement>) {
+  if (isDragging()) return;
+  if (e.target !== e.currentTarget) return; // click landed on a child element, not the SVG bg
+  if (pending) { setPending(null); return; }
+  // ...rest unchanged
+}
+```
+This ensures that even if `stopPropagation` is ever missed on a marker child, the add dialog will not trigger. A click on the SVG background (`e.target === svgElement`) is the only intended trigger for the add-annotation flow.
 
 **`src/lib/simbad.ts` — log the first 3 SIMBAD rows before calling `raDecToPixel`:**
 ```typescript

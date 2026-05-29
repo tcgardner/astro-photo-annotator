@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 import path from 'node:path';
-import type { Marker, StyleConfig, WCS } from '../types.js';
+import type { Marker, StyleConfig } from '../types.js';
 
 function escapeXml(s: string): string {
   return s
@@ -104,8 +104,7 @@ function buildMarkerSvg(marker: Marker, style: StyleConfig, imgWidth: number): s
     '</g>';
 }
 
-function buildSvg(markers: Marker[], style: StyleConfig, wcs: WCS): string {
-  const { width, height } = wcs;
+function buildSvg(markers: Marker[], style: StyleConfig, width: number, height: number): string {
   const visibleMarkers = markers.filter(m => {
     if (!m.visible) return false;
     if (style.catalogs.length > 0 && !style.catalogs.includes(m.catalog)) return false;
@@ -126,9 +125,10 @@ export async function exportAnnotatedImage(
   outputFormat: 'jpeg' | 'png',
   markers: Marker[],
   style: StyleConfig,
-  wcs: WCS,
+  width: number,
+  height: number,
 ): Promise<Buffer> {
-  const svgString = buildSvg(markers, style, wcs);
+  const svgString = buildSvg(markers, style, width, height);
   const svgBuffer = Buffer.from(svgString);
 
   const inst = sharp(imageData).composite([{ input: svgBuffer, gravity: 'northwest' }]);
