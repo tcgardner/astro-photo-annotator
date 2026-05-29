@@ -756,3 +756,71 @@ Exact placement decision: render `MarkerOverridePanel` in the existing right sid
 **`src/lib/sharp-export.ts` — apply overrides at export time.** The export path generates SVG from marker state. For each marker, apply `marker.overrides?.circleRadius ?? style.circleRadius` and `marker.overrides?.fontSize ?? style.fontSize` when building the SVG element, so the exported image matches what the user sees in the editor.
 
 **Files changed:** `src/types.ts` (add `MarkerStyleOverrides`, extend `Marker`), `ui/src/components/MarkerGroup.tsx` (resolve effective radius/fontSize/labelOffset), `ui/src/components/MarkerOverridePanel.tsx` (new file), parent layout (render `MarkerOverridePanel` when marker selected), `src/lib/sharp-export.ts` (apply per-marker overrides in SVG generation).
+
+---
+
+## Fix Plan: 2026-05-29 — Plate Solve Bugs
+
+### Problem 1: Re-solve is blocked
+
+**Symptom.** Once an image is `solved`, clicking Plate Solve returns the cached result immediately — the user can't force a fresh solve. The backend short-circuits at `solve.ts:42`:
+```typescript
+if (existing?.solveStatus === 'solved') {
+  res.json({ id: annId, status: 'solved', wcs: existing.wcs, markers: existing.markers });
+  return;
+}
+```
+The button's "Solved ✓" label and `cursor-default` style give no affordance that it can be clicked.
+
+**Fix — `src/routes/solve.ts`:**
+- Remove the early-return bailout for `solved` status entirely.
+- Before kicking off a new upload, call `resetAnnotationSolve(annId)` to null out `wcs_json`, `markers_json`, `astrometry_sub_id`, and set `solve_status = 'none'`. This ensures clients polling during a re-solve see clean state, not stale markers.
+
+**Fix — `src/db.ts`:**
+- Add `resetAnnotationSolve(id: number)`: sets `solve_status = 'none'`, nulls `wcs_json`, `markers_json`, `astrometry_sub_id`.
+
+**Fix — `ui/src/components/PlateSolveButton.tsx`:**
+- Change the `solved` label from `'Solved ✓'` to `'Re-solve ↺'`.
+- Change the `solved` CSS from `bg-green-700 text-green-200 cursor-default` to `bg-green-800 hover:bg-green-700 text-green-200` so it looks clickable.
+
+---
+
+### Problem 2: Solve state stuck after server restart
+
+**Symptom.** If the server dies while a solve is in progress (`solving` or `uploading`), the annotation stays stuck at that status in the DB. On next page load `useAnnotation` resumes polling, but no pipeline is running — it polls forever.
+
+**Fix — `src/db.ts`:**
+- Add `resetStuckSolves()`: `UPDATE annotations SET solve_status = 'failed' WHERE solve_status IN ('solving', 'uploading')`.
+
+**Fix — `src/main.ts`:**
+- Call `resetStuckSolves()` immediately after `getDb()` on startup, before the Express app mounts.
+
+---
+
+### Problem 3: Investigate consistent solve failures
+
+**Symptom.** Plate solving fails every time without a clear error surfaced to the user.
+
+**Likely root causes (in priority order):**
+1. The `astrometryUpload` multipart body is malformed — the `new Blob([new Uint8Array(image.data)])` path changed from the previous working code and may not be sending a valid file to Astrometry.net.
+2. `astrometryLogin` is failing silently (wrong API key, rate limit) — the error is swallowed by the outer try/catch which throws and Express returns a 500 with non-JSON body; the client's `r.json()` then throws a parse error, and the displayed `error` state is just `"SyntaxError: ..."` — not the underlying cause.
+3. Stuck `solving`/`uploading` state (from Problem 2) prevents the route from being reached at all.
+
+**Fix — `src/lib/astrometry.ts`:**
+- In `astrometryLogin`, log the full response JSON on failure: `console.error('[astrometry] login response:', json)`.
+- In `astrometryUpload`, log the full response JSON on failure: `console.error('[astrometry] upload response:', json)`.
+
+**Fix — `src/routes/solve.ts`:**
+- Add `console.log('[solve] starting for imageId=%s annId=%d', imageId, annId)` at the top of the handler to confirm the route is reached and no early-return is firing.
+
+---
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/db.ts` | Add `resetAnnotationSolve(id)`, `resetStuckSolves()` |
+| `src/main.ts` | Call `resetStuckSolves()` on startup |
+| `src/routes/solve.ts` | Remove solved-bailout; call `resetAnnotationSolve` before new solve; add entry log |
+| `src/lib/astrometry.ts` | Log full response on login/upload failure |
+| `ui/src/components/PlateSolveButton.tsx` | "Re-solve ↺" label + clickable style for solved state |

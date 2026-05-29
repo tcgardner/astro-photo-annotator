@@ -30,6 +30,7 @@ export async function astrometryLogin(apiKey: string): Promise<string> {
   });
   const json = await resp.json() as { status: string; session?: string; message?: string };
   if (json.status !== 'success' || !json.session) {
+    console.error('[astrometry] login response:', JSON.stringify(json));
     throw new Error(`Astrometry login failed: ${json.message ?? json.status}`);
   }
   return json.session;
@@ -49,6 +50,7 @@ export async function astrometryUpload(
   const resp = await fetch(`${BASE}/upload`, { method: 'POST', body: formData });
   const json = await resp.json() as { status: string; subid?: number };
   if (json.status !== 'success' || json.subid == null) {
+    console.error('[astrometry] upload response:', JSON.stringify(json));
     throw new Error(`Astrometry upload failed: ${json.status}`);
   }
   return json.subid;

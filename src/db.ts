@@ -156,6 +156,26 @@ export function updateAnnotationSolve(
     );
 }
 
+export function resetAnnotationSolve(id: number): void {
+  getDb()
+    .prepare(`
+      UPDATE annotations
+      SET solve_status      = 'none',
+          astrometry_sub_id = NULL,
+          wcs_json          = NULL,
+          markers_json      = NULL,
+          updated_at        = datetime('now')
+      WHERE id = ?
+    `)
+    .run(id);
+}
+
+export function resetStuckSolves(): void {
+  getDb()
+    .prepare(`UPDATE annotations SET solve_status = 'failed' WHERE solve_status IN ('solving', 'uploading')`)
+    .run();
+}
+
 export function updateAnnotationMarkers(id: number, markers: Marker[]): void {
   getDb()
     .prepare(`UPDATE annotations SET markers_json = ?, updated_at = datetime('now') WHERE id = ?`)

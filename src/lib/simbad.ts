@@ -45,6 +45,7 @@ export async function querySimbadAll(wcs: WCS): Promise<Marker[]> {
     'AND otype NOT IN (' + stellarList + ')',
     'AND ra IS NOT NULL',
     'AND dec IS NOT NULL',
+    "AND (main_id LIKE 'NGC %' OR main_id LIKE 'IC %' OR main_id LIKE 'M %' OR main_id LIKE 'PGC %')",
     'ORDER BY galdim_majaxis DESC, dist ASC',
   ].join(' ');
 

@@ -6,12 +6,13 @@ import { imagesRouter } from './routes/images.js';
 import { annotationsRouter } from './routes/annotations.js';
 import { settingsRouter } from './routes/settings.js';
 import { solveRouter } from './routes/solve.js';
-import { getDb } from './db.js';
+import { getDb, resetStuckSolves } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env['PORT'] ?? '3003', 10);
 
 getDb();
+resetStuckSolves();
 
 const app = express();
 app.use(express.json());

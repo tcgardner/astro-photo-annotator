@@ -74,8 +74,10 @@ export function AnnotationCanvas({ imageSrc, markers, style, wcs, selectedId: co
     setPending({
       svgX: Math.round(svgX),
       svgY: Math.round(svgY),
-      screenX: svgX * scaleX + rect.left - window.scrollX,
-      screenY: svgY * scaleY + rect.top - window.scrollY,
+      // rect is already in viewport coordinates (from getBoundingClientRect),
+      // so no scrollX/Y adjustment needed here — the popover parent is position:fixed.
+      screenX: svgX * scaleX + rect.left,
+      screenY: svgY * scaleY + rect.top,
     });
   }
 

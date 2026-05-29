@@ -9,7 +9,7 @@ const STATUS_LABEL: Record<SolveStatus, string> = {
   none: 'Plate Solve',
   uploading: 'Uploading…',
   solving: 'Solving…',
-  solved: 'Solved ✓',
+  solved: 'Re-solve ↺',
   failed: 'Failed — Retry',
 };
 
@@ -17,7 +17,7 @@ const STATUS_CLASS: Record<SolveStatus, string> = {
   none: 'bg-blue-600 hover:bg-blue-500 text-white',
   uploading: 'bg-gray-600 text-gray-300 cursor-wait',
   solving: 'bg-gray-600 text-gray-300 cursor-wait',
-  solved: 'bg-green-700 text-green-200 cursor-default',
+  solved: 'bg-green-800 hover:bg-green-700 text-green-200',
   failed: 'bg-red-700 hover:bg-red-600 text-white',
 };
 

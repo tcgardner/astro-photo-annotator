@@ -12,6 +12,7 @@ import { resetWcsLogCounter } from '../lib/wcs.js';
 import {
   upsertAnnotationPath,
   updateAnnotationSolve,
+  resetAnnotationSolve,
   getAnnotationById,
 } from '../db.js';
 
@@ -37,15 +38,12 @@ solveRouter.post('/', async (req, res) => {
   if (!imageId) { res.status(400).json({ error: 'imageId required' }); return; }
 
   const imagePath = String(imageId);
-
   const annId = upsertAnnotationPath(imagePath);
-  const existing = getAnnotationById(annId);
-  if (existing?.solveStatus === 'solved') {
-    res.json({ id: annId, status: 'solved', wcs: existing.wcs, markers: existing.markers });
-    return;
-  }
+  console.log('[solve] starting for imageId=%s annId=%d', imageId, annId);
 
   if (!API_KEY) { res.status(500).json({ error: 'ASTROMETRY_API_KEY not configured' }); return; }
+
+  resetAnnotationSolve(annId);
 
   try {
     updateAnnotationSolve(annId, { solveStatus: 'uploading' });
@@ -57,7 +55,8 @@ solveRouter.post('/', async (req, res) => {
     res.json({ id: annId, status: 'solving' });
 
     runPipeline(annId, subId, image).catch(err => {
-      console.error('[solve] pipeline error:', (err as Error).message);
+      const e = err as Error & { cause?: unknown };
+      console.error('[solve] pipeline error:', e.message, e.cause ?? '');
       updateAnnotationSolve(annId, { solveStatus: 'failed' });
     });
   } catch (err) {
@@ -71,7 +70,10 @@ async function runPipeline(
   subId: number,
   image: { data: Buffer; filename: string },
 ): Promise<void> {
+  console.log('[solve] polling submission subId=%d', subId);
   const jobId = await pollSubmission(subId);
+
+  console.log('[solve] polling job jobId=%d', jobId);
   const jobStatus = await pollJob(jobId);
 
   if (jobStatus === 'failure') {
@@ -79,12 +81,15 @@ async function runPipeline(
     return;
   }
 
+  console.log('[solve] fetching calibration jobId=%d', jobId);
   const meta = await sharp(image.data).metadata();
   const imgW = meta.width ?? 0;
   const imgH = meta.height ?? 0;
 
   const wcs = await getCalibration(jobId, imgW, imgH);
   console.log('[solve] WCS calibration:', JSON.stringify(wcs));
+
+  console.log('[solve] querying SIMBAD');
   resetWcsLogCounter();
   const markers = await querySimbadAll(wcs);
 
