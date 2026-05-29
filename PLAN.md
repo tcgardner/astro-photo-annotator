@@ -522,3 +522,237 @@ Possible causes not determinable from static analysis:
 | `src/lib/astrometry.ts` | Capture `parity` from calibration; include in returned `WCS` |
 | `src/lib/wcs.ts` | Fix RA wrapping; apply `wcs.parity` to x offset |
 | `src/lib/simbad.ts` | Read column indices from TAP metadata; add debug logging |
+
+---
+
+## Fix Plan: 2026-05-28 — Four Improvements
+
+### Issue 1 — SIMBAD returns 200 objects; filter to top 10–20 DSOs
+
+**Root cause.** `querySimbadAll` in `src/lib/simbad.ts` issues `SELECT TOP 200` ordered only by angular distance from the field center (`ORDER BY dist ASC`). This returns up to 200 non-stellar objects with no preference for angular size or brightness, so faint, tiny background galaxies (PGC entries with sub-arcminute extents) crowd out the prominent nebulae or clusters that should dominate the annotation.
+
+**Specific change — `src/lib/simbad.ts`.**
+
+1. Add `galdim_majaxis` to the `SELECT` list. This SIMBAD column (type `REAL`, units arcmin) holds the major-axis angular size for nebulae, galaxies, open clusters, etc. It is `NULL` for point-like objects. Because we already filter out stellar types, most returned objects will have a value.
+
+2. Replace `ORDER BY dist ASC` with a two-key sort:
+   ```sql
+   ORDER BY galdim_majaxis DESC, dist ASC
+   ```
+   Objects with the largest angular footprint float to the top; among equally-sized (or NULL) objects, proximity to field center breaks the tie. `NULL` sorts last naturally in SIMBAD's TAP (equivalent to `NULLS LAST`).
+
+3. Lower the hard limit from `TOP 200` to `TOP 20`.
+
+4. Update the `SimbadRow` interface to add `majAxis: number | null`.
+
+5. Update the column-index resolution block:
+   ```typescript
+   const majAxisIdx = col('galdim_majaxis');
+   ```
+   Use it only for logging/future filtering; pixel placement is unchanged.
+
+The complete revised ADQL:
+```sql
+SELECT TOP 20 main_id, otype, ra, dec, galdim_majaxis,
+  DISTANCE(POINT('ICRS',ra,dec),POINT('ICRS',${wcs.ra},${wcs.dec})) AS dist
+FROM basic
+WHERE CONTAINS(
+  POINT('ICRS',ra,dec),
+  CIRCLE('ICRS',${wcs.ra},${wcs.dec},${wcs.radius})
+)=1
+AND otype NOT IN (${stellarList})
+AND ra IS NOT NULL
+AND dec IS NOT NULL
+ORDER BY galdim_majaxis DESC, dist ASC
+```
+
+**Files changed:** `src/lib/simbad.ts` only — ADQL string, `SimbadRow` interface, column-index block.
+
+---
+
+### Issue 2 — Annotations still clustering at center; add diagnostics
+
+**Root cause diagnosis (as-far-as-known).** The previously confirmed bugs (parity, RA wrap-around, SIMBAD column ordering) are all fixed in the current code. Yet clustering persists, which means `pxDist ≈ 0` for every object. The two remaining candidates:
+
+- **`pixscale` unit mismatch.** If `getCalibration` in `src/lib/astrometry.ts` is reading `pixscale` in degrees/pixel rather than arcsec/pixel, then `(r * 3600) / pixscale` in `wcs.ts` yields a value 3600× too small. For example, a typical 1 arcsec/px image where the real pixscale is `1.0` but `wcs.pixscale` holds `0.000278` (degrees): a 0.1° separation object would compute `pxDist = (0.1 * 3600) / 0.000278 ≈ 129,000 px`, fail the bounds check, and be dropped — not cluster. But the reverse (pixscale stored as arcsec but field is actually tiny) would cause pxDist ≈ 0.
+
+- **`wcs.radius` too small.** If `getCalibration` returns `radius` in degrees but the SIMBAD query passes it directly and the field is, say, 0.3°, that is fine. But if `radius` is accidentally in arcsec (e.g. 1080 arcsec for a 0.3° field), SIMBAD would return zero rows for `CIRCLE(..., 1080)` interpreted as degrees. Zero rows → no markers, not clustering.
+
+- **The WCS values are correct but `raDecToPixel` returns `null` for everything except exactly the center.** The bounds check `x < 0 || x > wcs.width || y < 0 || y > wcs.height` discards out-of-frame objects. If all objects somehow end up at (NaN, NaN), `NaN < 0` is `false`, so they pass and become markers at position `(NaN, NaN)`. SVG renders `NaN` coords at the origin (0, 0) — not the center. So this is not the clustering cause.
+
+**Plan: add targeted logging before making any math changes.**
+
+**`src/lib/wcs.ts` — add per-call trace logging:**
+```typescript
+export function raDecToPixel(objRa: number, objDec: number, wcs: WCS) {
+  console.log('[wcs] input  ra=%f dec=%f  center ra=%f dec=%f  pixscale=%f orientation=%f parity=%d',
+    objRa, objDec, wcs.ra, wcs.dec, wcs.pixscale, wcs.orientation, wcs.parity);
+  // ... existing math ...
+  console.log('[wcs] dRa=%f dDec=%f r_deg=%f pxDist=%f angle_deg=%f  → x=%f y=%f (bounds: %dx%d)',
+    dRa, dDec, r, pxDist, (angle * 180 / Math.PI), x, y, wcs.width, wcs.height);
+  // ...
+}
+```
+Guard the verbose lines: only log the first N calls (use a module-level counter, reset per solve) so the server isn't flooded for 200 objects. Log the first 5 unconditionally, skip the rest.
+
+**`src/routes/solve.ts` — log WCS calibration immediately after `getCalibration` returns:**
+```typescript
+const wcs = await getCalibration(jobId, imgW, imgH);
+console.log('[solve] WCS calibration:', JSON.stringify(wcs));
+```
+This surfaces the raw values from Astrometry.net so we can confirm `pixscale` unit, `parity`, and `radius` before SIMBAD is queried.
+
+**`src/lib/simbad.ts` — log the first 3 SIMBAD rows before calling `raDecToPixel`:**
+```typescript
+for (const [i, row] of json.data.entries()) {
+  if (i < 3) {
+    console.log('[simbad] row %d: main_id=%s ra=%f dec=%f majAxis=%s',
+      i, String(row[mainIdIdx]), Number(row[raIdx]), Number(row[decIdx]),
+      majAxisIdx >= 0 ? String(row[majAxisIdx]) : 'n/a');
+  }
+  // ... existing raDecToPixel call ...
+}
+```
+
+**Interpretation guide (add as a code comment in `wcs.ts`):**
+- If `[solve] WCS calibration` shows `pixscale < 0.1` → likely in degrees/pixel. Fix `getCalibration` to multiply by 3600.
+- If `[wcs] pxDist` is always > `wcs.width` → all objects outside frame despite SIMBAD placing them in the cone. Implies `radius` used for SIMBAD query is wrong (too large), or `pixscale` unit is off in the other direction.
+- If `[simbad] row 0` shows `ra=NaN` or `ra=0` for a non-zero object → column index resolution is still broken. Check that `raIdx !== decIdx`.
+- If `pxDist ≈ 0` for every row despite correct-looking RA/Dec → `pixscale` is stored as deg/px (multiply by 3600 in `wcs.ts` line 17, changing `wcs.pixscale` to `wcs.pixscale / 3600`).
+
+**Files changed:** `src/lib/wcs.ts` (logging + counter guard), `src/routes/solve.ts` (post-calibration log), `src/lib/simbad.ts` (pre-projection row log).
+
+---
+
+### Issue 3 — Delete and move annotations
+
+**Root cause.** The delete button and drag wiring already exist in the component tree (`MarkerGroup` renders the ✕ button when `selected`, and `AnnotationCanvas` wires `useDrag`). There are two remaining gaps:
+
+1. **Inverse WCS is not applied after drag.** `useDrag` calls `onChange(markers.map(m => m.id === id ? { ...m, x, y } : m))`, which updates pixel position but leaves `ra`/`dec` at their original plate-solved values. On the next export or re-solve, positions would revert to the RA/Dec-derived pixels. The marker's authoritative position should be the new `(x, y)` when dragged manually.
+
+2. **`useDrag.ts` correctness and SVG-coordinate accuracy.** The drag hook must convert `mousemove` events to SVG coordinate space (not screen space). If it uses `clientX/clientY` directly without accounting for the SVG's `viewBox` scale, dragged markers jump to wrong positions. The hook should call `svgRef.current.createSVGPoint()` + `getScreenCTM().inverse()` to map screen coords to SVG coords.
+
+**Implementation plan.**
+
+**`ui/src/hooks/useDrag.ts` — verify/fix coordinate math.** The hook signature is already `(svgRef, onMove, onEnd)` where `onMove(id, x, y)` is called with SVG coordinates. If the coordinate transform is not using the CTM inverse, replace the coord mapping:
+```typescript
+function toSvgPoint(svg: SVGSVGElement, e: MouseEvent): { x: number; y: number } {
+  const pt = svg.createSVGPoint();
+  pt.x = e.clientX;
+  pt.y = e.clientY;
+  const ctm = svg.getScreenCTM();
+  if (!ctm) return { x: 0, y: 0 };
+  const svgPt = pt.matrixTransform(ctm.inverse());
+  return { x: Math.round(svgPt.x), y: Math.round(svgPt.y) };
+}
+```
+
+**`src/lib/wcs.ts` — add `pixelToRaDec` (inverse projection).** New exported function:
+```typescript
+export function pixelToRaDec(
+  x: number,
+  y: number,
+  wcs: WCS,
+): { ra: number; dec: number } {
+  const imgCx = wcs.width / 2;
+  const imgCy = wcs.height / 2;
+  const centerDecRad = (wcs.dec * Math.PI) / 180;
+  const orientationRad = (wcs.orientation * Math.PI) / 180;
+
+  const dx = wcs.parity * (x - imgCx);
+  const dy = -(y - imgCy);
+  const pxDist = Math.sqrt(dx * dx + dy * dy);
+  const r = (pxDist * wcs.pixscale) / 3600; // degrees
+
+  const angle = Math.atan2(dx, dy) + orientationRad;
+  const dDec = r * Math.cos(angle);
+  const dRa = (r * Math.sin(angle)) / Math.cos(centerDecRad);
+
+  const ra = ((wcs.ra + dRa) + 360) % 360;
+  const dec = wcs.dec + dDec;
+  return { ra, dec };
+}
+```
+
+**`ui/src/components/AnnotationCanvas.tsx` — call `pixelToRaDec` after drag.** The `useDrag` `onMove` callback currently does:
+```typescript
+onChange(markers.map(m => m.id === id ? { ...m, x, y } : m));
+```
+Change it to also invoke the inverse WCS when the annotation has a solved WCS (passed as a new prop or accessed via context):
+```typescript
+// In AnnotationCanvas, accept optional wcs prop
+const updatedMarker: Marker = { ...m, x, y };
+if (wcs && m.ra !== undefined) {
+  const { ra, dec } = pixelToRaDec(x, y, wcs);
+  updatedMarker.ra = ra;
+  updatedMarker.dec = dec;
+}
+onChange(markers.map(m => m.id === id ? updatedMarker : m));
+```
+If `wcs` is null (manually-placed marker with no plate solve), just update `x`/`y` and leave `ra`/`dec` undefined — this is already correct behavior.
+
+**`ui/src/components/AnnotationCanvas.tsx` prop change.** Add `wcs?: WCS | null` to the `Props` interface. The parent `EditorPage` already has `annotation.wcs` in state via `useAnnotation`; pass it through.
+
+**Files changed:** `src/lib/wcs.ts` (add `pixelToRaDec`), `ui/src/hooks/useDrag.ts` (fix CTM coordinate transform), `ui/src/components/AnnotationCanvas.tsx` (accept `wcs` prop, call inverse WCS in drag callback), `ui/src/pages/EditorPage.tsx` (pass `wcs` to `AnnotationCanvas`).
+
+---
+
+### Issue 4 — Per-marker size and position overrides
+
+**Root cause.** `StyleConfig` holds global values for `circleRadius`, `strokeWidth`, `fontSize`, and `labelOffset`. `MarkerGroup` reads exclusively from the `style` prop with no per-marker escape hatch. There is no UI to select a marker and adjust its individual appearance.
+
+**Data model change — `src/types.ts`.** Add optional override fields to `Marker`:
+```typescript
+export interface MarkerStyleOverrides {
+  circleRadius?: number;
+  fontSize?: number;
+  labelOffset?: { x: number; y: number };
+}
+
+export interface Marker {
+  id: string;
+  label: string;
+  catalog: CatalogPrefix;
+  ra?: number;
+  dec?: number;
+  x: number;
+  y: number;
+  markerStyle: MarkerStyle;
+  visible: boolean;
+  overrides?: MarkerStyleOverrides;   // NEW — per-marker style overrides
+}
+```
+All existing markers without `overrides` continue to work unchanged (field is optional).
+
+**`ui/src/components/MarkerGroup.tsx` — resolve effective style.** At the top of the component, before rendering, merge per-marker overrides onto the global style:
+```typescript
+const r        = marker.overrides?.circleRadius ?? style.circleRadius;
+const fontSize = marker.overrides?.fontSize     ?? style.fontSize;
+const lo       = marker.overrides?.labelOffset  ?? style.labelOffset;
+```
+Replace all uses of `style.circleRadius`, `style.fontSize`, and `style.labelOffset` with `r`, `fontSize`, and `lo` respectively. `strokeWidth` has no per-marker override (keep as global only — stroke weight is a design-wide decision).
+
+**`ui/src/components/MarkerOverridePanel.tsx` — new component.** A compact panel rendered in the right sidebar when a marker is selected. Props:
+```typescript
+interface Props {
+  marker: Marker;
+  globalStyle: StyleConfig;
+  onChange: (overrides: MarkerStyleOverrides) => void;
+  onClear: () => void;
+}
+```
+Controls:
+- **Radius** slider (range 4–60 px). Shows current effective value. Placeholder text "using global (N px)" when not overridden.
+- **Font size** slider (range 6–32 px). Same pattern.
+- **Label offset X/Y** — two number inputs (±50 px).
+- **"Clear overrides"** button — calls `onClear()`, which removes the `overrides` field from the marker.
+
+Each slider fires `onChange({ ...marker.overrides, circleRadius: newValue })` on change.
+
+**`ui/src/components/AnnotationCanvas.tsx` or parent layout — wire the panel.** When `selectedId` is non-null, look up the marker and render `<MarkerOverridePanel>` in the sidebar. The `onChange` handler calls `updateMarkers(markers.map(m => m.id === selectedId ? { ...m, overrides: newOverrides } : m))`. The `onClear` handler does the same with `overrides: undefined`.
+
+Exact placement decision: render `MarkerOverridePanel` in the existing right sidebar below the `StylePanel`, guarded by `selectedId !== null`. This avoids adding a floating panel that competes with the `AddMarkerPopover`.
+
+**`src/lib/sharp-export.ts` — apply overrides at export time.** The export path generates SVG from marker state. For each marker, apply `marker.overrides?.circleRadius ?? style.circleRadius` and `marker.overrides?.fontSize ?? style.fontSize` when building the SVG element, so the exported image matches what the user sees in the editor.
+
+**Files changed:** `src/types.ts` (add `MarkerStyleOverrides`, extend `Marker`), `ui/src/components/MarkerGroup.tsx` (resolve effective radius/fontSize/labelOffset), `ui/src/components/MarkerOverridePanel.tsx` (new file), parent layout (render `MarkerOverridePanel` when marker selected), `src/lib/sharp-export.ts` (apply per-marker overrides in SVG generation).

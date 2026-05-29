@@ -20,55 +20,51 @@ function buildMarkerSvg(marker: Marker, style: StyleConfig, imgWidth: number): s
   const { x, y } = marker;
   const color = markerColor(marker, style);
   const sw = style.strokeWidth;
-  const r = style.circleRadius;
-  const fontSize = style.fontSize;
+  // Per-marker overrides take precedence over global style
+  const r = marker.overrides?.circleRadius ?? style.circleRadius;
+  const fontSize = marker.overrides?.fontSize ?? style.fontSize;
+  const lo = marker.overrides?.labelOffset ?? style.labelOffset;
   const nearRightEdge = x > imgWidth * 0.85;
-  const labelX = nearRightEdge
-    ? x - r - style.labelOffset.x
-    : x + r + style.labelOffset.x;
+  const labelX = nearRightEdge ? x - r - lo.x : x + r + lo.x;
   const labelAnchor = nearRightEdge ? 'end' : 'start';
-  const labelY = y + style.labelOffset.y;
+  const labelY = y + lo.y;
   const safeLabel = escapeXml(marker.label);
 
   const labelSvg = style.showLabels
-    ? `<text x="${labelX}" y="${labelY}"
-        font-family="monospace" font-size="${fontSize}"
-        fill="${color}" text-anchor="${labelAnchor}"
-        stroke="black" stroke-width="${sw * 0.4}"
-        paint-order="stroke fill">${safeLabel}</text>`
+    ? '<text x="' + labelX + '" y="' + labelY + '"'
+      + ' font-family="monospace" font-size="' + fontSize + '"'
+      + ' fill="' + color + '" text-anchor="' + labelAnchor + '"'
+      + ' stroke="black" stroke-width="' + (sw * 0.4) + '"'
+      + ' paint-order="stroke fill">' + safeLabel + '</text>'
     : '';
 
   if (marker.markerStyle === 'crosshair') {
     const size = r;
     const gap = Math.round(r * 0.35);
-    return `<g>
-      <line x1="${x - size}" y1="${y}" x2="${x - gap}" y2="${y}" stroke="${color}" stroke-width="${sw}"/>
-      <line x1="${x + gap}" y1="${y}" x2="${x + size}" y2="${y}" stroke="${color}" stroke-width="${sw}"/>
-      <line x1="${x}" y1="${y - size}" x2="${x}" y2="${y - gap}" stroke="${color}" stroke-width="${sw}"/>
-      <line x1="${x}" y1="${y + gap}" x2="${x}" y2="${y + size}" stroke="${color}" stroke-width="${sw}"/>
-      ${labelSvg}
-    </g>`;
+    return '<g>'
+      + '<line x1="' + (x - size) + '" y1="' + y + '" x2="' + (x - gap) + '" y2="' + y + '" stroke="' + color + '" stroke-width="' + sw + '"/>'
+      + '<line x1="' + (x + gap) + '" y1="' + y + '" x2="' + (x + size) + '" y2="' + y + '" stroke="' + color + '" stroke-width="' + sw + '"/>'
+      + '<line x1="' + x + '" y1="' + (y - size) + '" x2="' + x + '" y2="' + (y - gap) + '" stroke="' + color + '" stroke-width="' + sw + '"/>'
+      + '<line x1="' + x + '" y1="' + (y + gap) + '" x2="' + x + '" y2="' + (y + size) + '" stroke="' + color + '" stroke-width="' + sw + '"/>'
+      + labelSvg
+      + '</g>';
   }
 
   if (marker.markerStyle === 'dot') {
-    return `<g>
-      <circle cx="${x}" cy="${y}" r="${Math.max(2, Math.round(r / 3))}" fill="${color}"/>
-      ${labelSvg}
-    </g>`;
+    return '<g>'
+      + '<circle cx="' + x + '" cy="' + y + '" r="' + Math.max(2, Math.round(r / 3)) + '" fill="' + color + '"/>'
+      + labelSvg
+      + '</g>';
   }
 
   // default: circle
-  return `<g>
-    <circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" stroke-width="${sw}"/>
-    ${labelSvg}
-  </g>`;
+  return '<g>'
+    + '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="none" stroke="' + color + '" stroke-width="' + sw + '"/>'
+    + labelSvg
+    + '</g>';
 }
 
-function buildSvg(
-  markers: Marker[],
-  style: StyleConfig,
-  wcs: WCS,
-): string {
+function buildSvg(markers: Marker[], style: StyleConfig, wcs: WCS): string {
   const { width, height } = wcs;
   const visibleMarkers = markers.filter(m => {
     if (!m.visible) return false;
@@ -78,10 +74,11 @@ function buildSvg(
 
   const markerSvgs = visibleMarkers.map(m => buildMarkerSvg(m, style, width)).join('\n');
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"
-    viewBox="0 0 ${width} ${height}">
-  ${markerSvgs}
-</svg>`;
+  return '<svg xmlns="http://www.w3.org/2000/svg"'
+    + ' width="' + width + '" height="' + height + '"'
+    + ' viewBox="0 0 ' + width + ' ' + height + '">\n'
+    + markerSvgs + '\n'
+    + '</svg>';
 }
 
 export async function exportAnnotatedImage(
@@ -120,14 +117,14 @@ export async function uploadToAstroDB(
   form.append('processed_at', new Date().toISOString());
   if (capturedAt) form.append('captured_at', capturedAt);
 
-  const resp = await fetch(`${astroDbUrl}/api/images/upload`, {
+  const resp = await fetch(astroDbUrl + '/api/images/upload', {
     method: 'POST',
     body: form,
   });
 
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`astro-db upload failed ${resp.status}: ${body}`);
+    throw new Error('astro-db upload failed ' + resp.status + ': ' + body);
   }
 
   const json = await resp.json() as { id: number; filename: string; file_url: string };

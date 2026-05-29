@@ -2,4 +2,8 @@ node_modules/
 dist/
 ui/dist/
 ui/node_modules/
-ui/src/**/
+ui/src/**/*.js
+*.db
+*.db-shm
+*.db-wal
+.env

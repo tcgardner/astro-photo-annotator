@@ -3,6 +3,12 @@ export type MarkerStyle = 'circle' | 'crosshair' | 'dot';
 export type SolveStatus = 'none' | 'uploading' | 'solving' | 'solved' | 'failed';
 export type PresetName = 'dense' | 'minimal' | 'circles' | 'crosshairs' | 'custom';
 
+export interface MarkerStyleOverrides {
+  circleRadius?: number;
+  fontSize?: number;
+  labelOffset?: { x: number; y: number };
+}
+
 export interface Marker {
   id: string;
   label: string;
@@ -13,6 +19,7 @@ export interface Marker {
   y: number;
   markerStyle: MarkerStyle;
   visible: boolean;
+  overrides?: MarkerStyleOverrides;
 }
 
 export interface StyleConfig {
@@ -33,6 +40,7 @@ export interface WCS {
   radius: number;
   pixscale: number;
   orientation: number;
+  parity: 1 | -1;
   width: number;
   height: number;
 }

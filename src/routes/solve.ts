@@ -8,6 +8,7 @@ import {
   getCalibration,
 } from '../lib/astrometry.js';
 import { querySimbadAll } from '../lib/simbad.js';
+import { resetWcsLogCounter } from '../lib/wcs.js';
 import {
   upsertAnnotationPath,
   updateAnnotationSolve,
@@ -22,15 +23,15 @@ const API_KEY = process.env['ASTROMETRY_API_KEY'] ?? '';
 async function downloadImage(
   imageId: number,
 ): Promise<{ data: Buffer; mime: string; filename: string }> {
-  const resp = await fetch(`${ASTRO_DB_URL}/api/images/${imageId}/file`);
-  if (!resp.ok) throw new Error(`Failed to download image ${imageId}: ${resp.status}`);
+  const resp = await fetch(ASTRO_DB_URL + '/api/images/' + imageId + '/file');
+  if (!resp.ok) throw new Error('Failed to download image ' + imageId + ': ' + resp.status);
   const data = Buffer.from(await resp.arrayBuffer());
   const mime = resp.headers.get('content-type') ?? 'image/jpeg';
   const ext = mime.includes('png') ? '.png' : '.jpg';
-  return { data, mime, filename: `image_${imageId}${ext}` };
+  return { data, mime, filename: 'image_' + imageId + ext };
 }
 
-// POST /api/solve — download from astro-db, submit to Astrometry.net, run pipeline in background
+// POST /api/solve -- download from astro-db, submit to Astrometry.net, run pipeline in background
 solveRouter.post('/', async (req, res) => {
   const { imageId } = req.body as { imageId?: number };
   if (!imageId) { res.status(400).json({ error: 'imageId required' }); return; }
@@ -83,15 +84,17 @@ async function runPipeline(
   const imgH = meta.height ?? 0;
 
   const wcs = await getCalibration(jobId, imgW, imgH);
+  console.log('[solve] WCS calibration:', JSON.stringify(wcs));
+  resetWcsLogCounter();
   const markers = await querySimbadAll(wcs);
 
   const primaryLabel = markers[0]?.label ?? null;
 
   updateAnnotationSolve(annId, { solveStatus: 'solved', wcs, markers, catalogId: primaryLabel });
-  console.log(`[solve] ${image.filename} → solved, ${markers.length} objects`);
+  console.log('[solve] ' + image.filename + ' solved, ' + markers.length + ' objects');
 }
 
-// GET /api/solve/:id/status — poll solve status from DB
+// GET /api/solve/:id/status -- poll solve status from DB
 solveRouter.get('/:id/status', (req, res) => {
   const id = parseInt(req.params['id'], 10);
   if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }

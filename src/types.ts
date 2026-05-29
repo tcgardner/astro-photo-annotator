@@ -13,6 +13,12 @@ export type CatalogPrefix = 'NGC' | 'IC' | 'M' | 'PGC' | 'custom';
 export type MarkerStyle = 'circle' | 'crosshair' | 'dot';
 export type SolveStatus = 'none' | 'uploading' | 'solving' | 'solved' | 'failed';
 
+export interface MarkerStyleOverrides {
+  circleRadius?: number;
+  fontSize?: number;
+  labelOffset?: { x: number; y: number };
+}
+
 export interface Marker {
   id: string;
   label: string;
@@ -23,6 +29,7 @@ export interface Marker {
   y: number;
   markerStyle: MarkerStyle;
   visible: boolean;
+  overrides?: MarkerStyleOverrides;
 }
 
 export interface StyleConfig {

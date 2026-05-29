@@ -17,13 +17,15 @@ export function MarkerGroup({ marker, style, imgWidth, selected, onSelect, onDra
 
   const { x, y } = marker;
   const color = style.catalogColors[marker.catalog] ?? '#ffffff';
-  const r = style.circleRadius;
+  // Per-marker overrides take precedence over global style
+  const r = marker.overrides?.circleRadius ?? style.circleRadius;
   const sw = style.strokeWidth;
-  const fontSize = style.fontSize;
+  const fontSize = marker.overrides?.fontSize ?? style.fontSize;
+  const lo = marker.overrides?.labelOffset ?? style.labelOffset;
   const nearRight = x > imgWidth * 0.85;
-  const labelX = nearRight ? x - r - style.labelOffset.x : x + r + style.labelOffset.x;
+  const labelX = nearRight ? x - r - lo.x : x + r + lo.x;
   const labelAnchor = nearRight ? 'end' : 'start';
-  const labelY = y + style.labelOffset.y;
+  const labelY = y + lo.y;
 
   const highlightColor = selected ? '#facc15' : color;
 
@@ -95,7 +97,7 @@ export function MarkerGroup({ marker, style, imgWidth, selected, onSelect, onDra
           style={{ cursor: 'pointer' }}
         >
           <circle cx={x + r + 6} cy={y - r - 6} r={6} fill="#ef4444" />
-          <text x={x + r + 6} y={y - r - 6} textAnchor="middle" dominantBaseline="middle" fontSize={9} fill="white">✕</text>
+          <text x={x + r + 6} y={y - r - 6} textAnchor="middle" dominantBaseline="middle" fontSize={9} fill="white">X</text>
         </g>
       )}
     </g>

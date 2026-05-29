@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { randomUUID } from '../util';
-import type { Marker, StyleConfig, CatalogPrefix, MarkerStyle } from '../types';
+import type { Marker, StyleConfig, CatalogPrefix, MarkerStyle, WCS } from '../types';
+import { pixelToRaDec } from '../lib/wcs';
 import { MarkerGroup } from './MarkerGroup';
 import { AddMarkerPopover } from './AddMarkerPopover';
 import { useDrag } from '../hooks/useDrag';
@@ -16,19 +17,39 @@ interface Props {
   imageSrc: string;
   markers: Marker[];
   style: StyleConfig;
+  wcs?: WCS | null;
+  selectedId?: string | null;
+  onSelectedIdChange?: (id: string | null) => void;
   onChange: (markers: Marker[]) => void;
 }
 
-export function AnnotationCanvas({ imageSrc, markers, style, onChange }: Props) {
+export function AnnotationCanvas({ imageSrc, markers, style, wcs, selectedId: controlledSelectedId, onSelectedIdChange, onChange }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [imgDims, setImgDims] = useState({ width: 0, height: 0 });
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [internalSelectedId, setInternalSelectedId] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingMarker | null>(null);
+
+  // Support both controlled (selectedId prop) and uncontrolled usage
+  const selectedId = controlledSelectedId !== undefined ? controlledSelectedId : internalSelectedId;
+  function setSelectedId(id: string | null) {
+    setInternalSelectedId(id);
+    onSelectedIdChange?.(id);
+  }
 
   const { startDrag, onMouseMove, onMouseUp, isDragging, toSvgCoords } = useDrag(
     svgRef,
     (id, x, y) => {
-      onChange(markers.map(m => m.id === id ? { ...m, x, y } : m));
+      onChange(markers.map(m => {
+        if (m.id !== id) return m;
+        const updated: Marker = { ...m, x, y };
+        // Back-calculate RA/Dec from new pixel position when WCS is available
+        if (wcs && m.ra !== undefined && m.dec !== undefined) {
+          const { ra, dec } = pixelToRaDec(x, y, wcs);
+          updated.ra = ra;
+          updated.dec = dec;
+        }
+        return updated;
+      }));
     },
     () => { /* auto-saved by onChange */ },
   );
@@ -102,7 +123,7 @@ export function AnnotationCanvas({ imageSrc, markers, style, onChange }: Props) 
       {imgDims.width > 0 && (
         <svg
           ref={svgRef}
-          viewBox={`0 0 ${imgDims.width} ${imgDims.height}`}
+          viewBox={"0 0 " + imgDims.width + " " + imgDims.height}
           className="annotation-svg absolute inset-0 w-full h-full"
           onClick={handleSvgClick}
           onMouseMove={onMouseMove}

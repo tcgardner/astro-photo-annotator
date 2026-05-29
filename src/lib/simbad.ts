@@ -14,6 +14,7 @@ interface SimbadRow {
   otype: string;
   ra: number;
   dec: number;
+  majAxis: number | null;
 }
 
 function parseCatalog(mainId: string): CatalogPrefix {
@@ -32,27 +33,27 @@ function normalizeId(mainId: string): string {
 }
 
 export async function querySimbadAll(wcs: WCS): Promise<Marker[]> {
-  const stellarList = STELLAR_TYPES.map(t => `'${t}'`).join(',');
-  const adql = `
-    SELECT TOP 200 main_id, otype, ra, dec,
-      DISTANCE(POINT('ICRS',ra,dec),POINT('ICRS',${wcs.ra},${wcs.dec})) AS dist
-    FROM basic
-    WHERE CONTAINS(
-      POINT('ICRS',ra,dec),
-      CIRCLE('ICRS',${wcs.ra},${wcs.dec},${wcs.radius})
-    )=1
-    AND otype NOT IN (${stellarList})
-    AND ra IS NOT NULL
-    AND dec IS NOT NULL
-    ORDER BY dist ASC
-  `.replace(/\s+/g, ' ').trim();
+  const stellarList = STELLAR_TYPES.map(t => "'" + t + "'").join(',');
+  const adql = [
+    'SELECT TOP 20 main_id, otype, ra, dec, galdim_majaxis,',
+    "  DISTANCE(POINT('ICRS',ra,dec),POINT('ICRS'," + wcs.ra + "," + wcs.dec + ")) AS dist",
+    'FROM basic',
+    'WHERE CONTAINS(',
+    "  POINT('ICRS',ra,dec),",
+    "  CIRCLE('ICRS'," + wcs.ra + "," + wcs.dec + "," + wcs.radius + ")",
+    ')=1',
+    'AND otype NOT IN (' + stellarList + ')',
+    'AND ra IS NOT NULL',
+    'AND dec IS NOT NULL',
+    'ORDER BY galdim_majaxis DESC, dist ASC',
+  ].join(' ');
 
   const params = new URLSearchParams({
     REQUEST: 'doQuery', LANG: 'ADQL', FORMAT: 'json', QUERY: adql,
   });
 
-  const resp = await fetch(`${SIMBAD_TAP}?${params}`);
-  if (!resp.ok) throw new Error(`SIMBAD query failed: ${resp.status}`);
+  const resp = await fetch(SIMBAD_TAP + '?' + params);
+  if (!resp.ok) throw new Error('SIMBAD query failed: ' + resp.status);
 
   const json = await resp.json() as { metadata?: { name: string }[]; data?: unknown[][] };
   if (!json.data || json.data.length === 0) return [];
@@ -63,18 +64,28 @@ export async function querySimbadAll(wcs: WCS): Promise<Marker[]> {
   const mainIdIdx = col('main_id');
   const raIdx = col('ra');
   const decIdx = col('dec');
+  const majAxisIdx = col('galdim_majaxis');
 
   if (raIdx === -1 || decIdx === -1 || mainIdIdx === -1) {
     console.error('[simbad] unexpected column layout:', meta.map(m => m.name));
     return [];
   }
 
+  console.log('[simbad] columns:', meta.map(m => m.name).join(', '));
+  console.log('[simbad] rows returned:', json.data.length);
+
   const markers: Marker[] = [];
 
-  for (const row of json.data) {
+  for (const [i, row] of json.data.entries()) {
     const mainId = String(row[mainIdIdx]);
     const ra = Number(row[raIdx]);
     const dec = Number(row[decIdx]);
+    const majAxis = majAxisIdx >= 0 && row[majAxisIdx] != null ? Number(row[majAxisIdx]) : null;
+
+    if (i < 3) {
+      const majStr = majAxis !== null ? majAxis + ' arcmin' : 'null';
+      console.log('[simbad] row ' + i + ': main_id=' + mainId + ' ra=' + ra + ' dec=' + dec + ' majAxis=' + majStr);
+    }
 
     const coords = raDecToPixel(ra, dec, wcs);
     if (!coords) continue;
